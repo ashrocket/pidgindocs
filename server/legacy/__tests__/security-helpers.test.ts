@@ -19,6 +19,20 @@ describe("HTML text extraction", () => {
     expect(removeRawTextElements(html)).toBe(html);
   });
 
+  it("treats stray quotes in malformed attributes as HTML parse errors", () => {
+    expect(htmlToPlainText(`<p broken'>visible</p><script>secret</script>after`)).toBe("visible\n\nafter");
+    expect(htmlToPlainText(`<p value=bad'quote>visible</p><style>secret</style>after`)).toBe("visible\n\nafter");
+    expect(removeRawTextElements(`before<script>secret</script broken'>after`)).toBe("beforeafter");
+    expect(htmlToPlainText(`<p value="unterminated<script>secret`)).toBe('&lt;p value="unterminated&lt;script>secret');
+  });
+
+  it("handles tag-heavy and unterminated input with bounded scans", () => {
+    const tags = "<p>x</p>".repeat(20_000);
+    expect(removeRawTextElements(tags + "<SCRIPT>secret</SCRIPT>")).toBe(tags);
+    expect(htmlToPlainText("<p title=\"" + "<p".repeat(20_000))).toBe('&lt;p title="' + "&lt;p".repeat(20_000));
+    expect(removeRawTextElements("<SCRIPT>x</SCRIPT>".repeat(20_000))).toBe("");
+  });
+
   it("keeps encoded angle brackets inert in email plain text", () => {
     expect(htmlToPlainText("<p>Hello &amp; welcome</p><script>alert(1)</script>&lt;script&gt;safe&lt;/script&gt;"))
       .toBe("Hello & welcome\n\n&lt;script&gt;safe&lt;/script&gt;");

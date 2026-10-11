@@ -52,9 +52,8 @@ export function htmlToPlainText(html: string): string {
     if (source[i] === "<" && isTagStartAt(source, i)) {
       const tagEnd = findTagEnd(source, i + 1);
       if (tagEnd === -1) {
-        output += "&lt;";
-        i++;
-        continue;
+        output += source.slice(i).replace(/</g, "&lt;");
+        break; // Do not repeatedly scan the same unterminated tag suffix.
       }
       const tagName = readTagName(source, i);
       if (tagName === "br") {
@@ -80,7 +79,7 @@ export function htmlToPlainText(html: string): string {
 }
 
 function rawTextNameAt(html: string, start: number): "script" | "style" | null {
-  const remainder = html.slice(start + 1).toLowerCase();
+  const remainder = html.slice(start + 1, start + 8).toLowerCase();
   for (const name of ["script", "style"] as const) {
     const boundary = remainder[name.length];
     if (remainder.startsWith(name) && isTagBoundary(boundary)) return name;
@@ -134,31 +133,36 @@ function readTagName(html: string, start: number): string {
 }
 
 function findRawTextEnd(html: string, from: number, name: "script" | "style"): number {
-  const lower = html.toLowerCase();
   const needle = `</${name}`;
-  let candidate = from;
-  while ((candidate = lower.indexOf(needle, candidate)) !== -1) {
-    const boundary = lower[candidate + needle.length];
-    if (boundary === ">" || boundary === "/" || boundary === " " || boundary === "\t" || boundary === "\n" || boundary === "\r" || boundary === "\f") {
-      const close = findTagEnd(html, candidate + needle.length);
-      if (close !== -1) return candidate;
-      return -1;
+  for (let candidate = from; candidate < html.length; candidate++) {
+    if (html[candidate] !== "<") continue;
+    if (html.slice(candidate, candidate + needle.length).toLowerCase() !== needle) continue;
+    if (isTagBoundary(html[candidate + needle.length])) {
+      return findTagEnd(html, candidate + needle.length) === -1 ? -1 : candidate;
     }
-    candidate += needle.length;
   }
   return -1;
 }
 
 function findTagEnd(html: string, from: number): number {
-  let quote = "";
+  // Quotes delimit only attribute values. Stray quotes in names or unquoted
+  // values are parse errors in HTML, but do not hide the following `>`.
+  let state: "name" | "beforeValue" | "unquoted" | "single" | "double" = "name";
   for (let i = from; i < html.length; i++) {
     const character = html[i];
-    if (quote) {
-      if (character === quote) quote = "";
-    } else if (character === "'" || character === '"') {
-      quote = character;
-    } else if (character === ">") {
-      return i;
+    if (state === "single" || state === "double") {
+      if (character === (state === "single" ? "'" : '"')) state = "name";
+      continue;
+    }
+    if (character === ">") return i;
+    const whitespace = character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f";
+    if (state === "beforeValue") {
+      if (whitespace) continue;
+      state = character === "'" ? "single" : character === '"' ? "double" : "unquoted";
+    } else if (state === "unquoted") {
+      if (whitespace) state = "name";
+    } else if (character === "=") {
+      state = "beforeValue";
     }
   }
   return -1;
