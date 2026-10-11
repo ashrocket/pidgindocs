@@ -567,7 +567,13 @@ async function sendReply(messageId) {
     var data = await res.json();
     if (data.ok) {
       var form = document.getElementById('reply-' + messageId);
-      form.innerHTML = '<div class="reply-done"><span class="reply-label">Replied:</span> ' + input.value.trim().replace(/</g,'&lt;') + '</div>';
+      var done = document.createElement('div');
+      done.className = 'reply-done';
+      var label = document.createElement('span');
+      label.className = 'reply-label';
+      label.textContent = 'Replied:';
+      done.append(label, document.createTextNode(' ' + input.value.trim()));
+      form.replaceChildren(done);
     } else {
       btn.textContent = data.error || 'Failed';
       btn.disabled = false;
