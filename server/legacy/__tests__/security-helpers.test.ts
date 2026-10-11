@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { removeRawTextElements } from "../html-text";
+import { htmlToPlainText, removeRawTextElements } from "../html-text";
 import { unbiasedIndex } from "../invites";
 
 describe("HTML text extraction", () => {
@@ -11,11 +11,17 @@ describe("HTML text extraction", () => {
 
   it("drops an unclosed raw-text element through end of input", () => {
     expect(removeRawTextElements("visible<script>not visible")).toBe("visible");
+    expect(htmlToPlainText("<script")).toBe("&lt;script");
   });
 
   it("does not treat script-like text inside an attribute or comment as an element", () => {
     const html = '<p title="<script>attribute text</script>">visible</p><!-- <script>comment</script> -->';
     expect(removeRawTextElements(html)).toBe(html);
+  });
+
+  it("keeps encoded angle brackets inert in email plain text", () => {
+    expect(htmlToPlainText("<p>Hello &amp; welcome</p><script>alert(1)</script>&lt;script&gt;safe&lt;/script&gt;"))
+      .toBe("Hello & welcome\n\n&lt;script&gt;safe&lt;/script&gt;");
   });
 });
 

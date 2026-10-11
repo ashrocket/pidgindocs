@@ -31,6 +31,54 @@ export function removeRawTextElements(html: string): string {
   return output;
 }
 
+/** Convert HTML to email-safe plain text without decoding escaped angle brackets. */
+export function htmlToPlainText(html: string): string {
+  const source = removeRawTextElements(html);
+  let output = "";
+
+  for (let i = 0; i < source.length;) {
+    if (source.startsWith("<!--", i)) {
+      const commentEnd = source.indexOf("-->", i + 4);
+      i = commentEnd === -1 ? source.length : commentEnd + 3;
+      continue;
+    }
+
+    if (source[i] === "<" && (source[i + 1] === "!" || source[i + 1] === "?")) {
+      const declarationEnd = findTagEnd(source, i + 1);
+      i = declarationEnd === -1 ? source.length : declarationEnd + 1;
+      continue;
+    }
+
+    if (source[i] === "<" && isTagStartAt(source, i)) {
+      const tagEnd = findTagEnd(source, i + 1);
+      if (tagEnd === -1) {
+        output += "&lt;";
+        i++;
+        continue;
+      }
+      const tagName = readTagName(source, i);
+      if (tagName === "br") {
+        output += "\n";
+      } else if (tagName === "p" && source[i + 1] === "/") {
+        output += "\n\n";
+      }
+      i = tagEnd + 1;
+      continue;
+    }
+
+    output += source[i] === "<" ? "&lt;" : source[i];
+    i++;
+  }
+
+  return output
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, "&")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function rawTextNameAt(html: string, start: number): "script" | "style" | null {
   const remainder = html.slice(start + 1).toLowerCase();
   for (const name of ["script", "style"] as const) {
@@ -71,6 +119,18 @@ function isTagStartAt(html: string, start: number): boolean {
   if (html[nameStart] === "/") nameStart++;
   const first = html[nameStart]?.toLowerCase();
   return first !== undefined && first >= "a" && first <= "z";
+}
+
+function readTagName(html: string, start: number): string {
+  let nameStart = start + 1;
+  if (html[nameStart] === "/") nameStart++;
+  let end = nameStart;
+  while (end < html.length) {
+    const character = html[end].toLowerCase();
+    if (!(character >= "a" && character <= "z") && !(character >= "0" && character <= "9") && character !== ":" && character !== "-") break;
+    end++;
+  }
+  return html.slice(nameStart, end).toLowerCase();
 }
 
 function findRawTextEnd(html: string, from: number, name: "script" | "style"): number {
