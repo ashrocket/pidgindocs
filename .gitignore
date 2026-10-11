@@ -1,0 +1,38 @@
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+.mf/
+server/wrangler.duva-public.generated.toml
+server/wrangler.duva-retailaer.generated.toml
+server/wrangler.duva-userhappy.generated.toml
+
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+.playwright/
+
+# macOS junk
+.DS_Store
+
+# Machine-local Claude config (hardcoded paths)
+.claude/
+
+# Per-session scratch / handoff notes
+next.md
+nextprompt.md
+coord.md
+fable.md
+.cheaploop/
+
+# Xcode build products
+clients/apple/build/
+clients/apple/DerivedData/
+clients/apple/**/xcuserdata/
+clients/apple/**/*.xcuserstate
+
+# Git worktrees
+worktrees/
+
+# Duva split: local R2 copy manifests (the workflow keeps them as run artifacts)
+duva-retailaer-r2-manifest.json

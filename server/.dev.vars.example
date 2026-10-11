@@ -1,0 +1,18 @@
+# Required. Cloudflare's deploy wizard asks for these values.
+API_KEY=replace-with-a-long-random-secret
+OWNER_EMAIL=you@example.com
+
+# Set this to the final workers.dev or custom-domain origin shown by Cloudflare.
+WORKER_URL=https://pidgindocs.example.workers.dev
+
+# Optional: magic-link email without Cloudflare Email Routing.
+RESEND_API_KEY=
+RESEND_FROM=PidginDocs <pidgindocs@example.com>
+
+# Optional: document enhancement and commute generation.
+ANTHROPIC_API_KEY=
+
+# Optional: push notifications require credentials for an Apple app you sign.
+APNS_KEY_ID=
+APNS_TEAM_ID=
+APNS_PRIVATE_KEY=

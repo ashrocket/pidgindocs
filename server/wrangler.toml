@@ -1,0 +1,60 @@
+# Portable example configuration for a PidginDocs instance.
+name = "pidgindocs"
+main = "legacy/index.ts"
+compatibility_date = "2026-05-28"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pidgindocs-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "pidgindocs-docs"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"
+
+[[queues.producers]]
+binding = "ENHANCE_QUEUE"
+queue = "pidgindocs-enhance"
+
+[[queues.consumers]]
+queue = "pidgindocs-enhance"
+max_batch_size = 1
+max_retries = 3
+dead_letter_queue = "pidgindocs-enhance-dlq"
+
+[[durable_objects.bindings]]
+name = "MATRIX_SYNC"
+class_name = "MatrixSyncDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MatrixSyncDO"]
+
+[vars]
+ENVIRONMENT = "development"
+WORKER_URL = "https://pidgindocs.example.workers.dev"
+MAIL_FROM = "PidginDocs <pidgindocs@example.com>"
+
+[triggers]
+crons = ["0 3 * * *"]
+
+[[rules]]
+type = "Data"
+globs = ["**/*.woff", "**/*.ttf", "**/*.otf"]
+fallthrough = true
+
+[[rules]]
+type = "Data"
+globs = ["**/*.jpg"]
+fallthrough = true
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true

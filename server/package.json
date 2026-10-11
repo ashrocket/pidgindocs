@@ -1,0 +1,52 @@
+{
+  "name": "pidgindocs-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "npm run db:migrate:self-host && wrangler deploy --config wrangler.toml",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "wrangler d1 migrations apply DB --local --config wrangler.toml",
+    "db:migrate:self-host": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
+    "types": "wrangler types --config wrangler.toml"
+  },
+  "cloudflare": {
+    "bindings": {
+      "API_KEY": {
+        "description": "Required bearer token for agents. Generate a long random value, for example with `openssl rand -hex 32`."
+      },
+      "OWNER_EMAIL": {
+        "description": "Required email address for the first and only owner account."
+      },
+      "WORKER_URL": {
+        "description": "Required final HTTPS origin for this Worker, with no trailing slash. Update the example after choosing the Worker name."
+      },
+      "RESEND_API_KEY": {
+        "description": "Optional. Enables magic-link email without configuring Cloudflare Email Routing."
+      },
+      "RESEND_FROM": {
+        "description": "Optional verified sender used with RESEND_API_KEY."
+      },
+      "APNS_PRIVATE_KEY": {
+        "description": "Optional. Push requires credentials for an Apple app signed by your own developer team."
+      },
+      "TYPESAFE_API_KEY": {
+        "description": "Optional. A TypeSafe API key turns on JEV library search, cited answers, and filing suggestions."
+      }
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@cloudflare/workers-types": "^5.20261011.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.149.0"
+  },
+  "dependencies": {
+    "@resvg/resvg-wasm": "^2.6.2",
+    "jose": "^6.2.12",
+    "marked": "^18.0.5",
+    "satori": "^0.26.0"
+  }
+}
