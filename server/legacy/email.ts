@@ -1,6 +1,7 @@
 import { EmailMessage } from "cloudflare:email";
 import type { Env } from "./types";
 import { theme } from "./web/theme";
+import { removeRawTextElements } from "./html-text";
 
 function escapeHtml(value: string): string {
   return value
@@ -11,15 +12,15 @@ function escapeHtml(value: string): string {
 }
 
 function stripHtml(value: string): string {
-  return value
+  return removeRawTextElements(value)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
     .trim();
 }
 
