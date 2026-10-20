@@ -4,6 +4,7 @@ import { verifySession, resolveApiKeyUser, resolveCallerUserId, unauthorized } f
 import { sendOwnerEmail, emailWrapper } from "../email";
 import { renderPreviewPng } from "../preview/render";
 import { theme } from "../web/theme";
+import { removeRawTextElements } from "../html-text";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_WEEK = 7 * 24 * ONE_HOUR;
@@ -397,16 +398,14 @@ export async function handleGetInteractiveDoc(
 }
 
 function stripHtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+  return removeRawTextElements(html)
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#\d+;/g, " ")
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
 }
