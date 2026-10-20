@@ -23,6 +23,7 @@ import {
   type ArtifactRow,
 } from "../artifacts/store";
 import { artifactCsp, designSystemStyleBlock, wrapArtifactHtml } from "../artifacts/render";
+import { addReaderUi } from "../web/reader-ui";
 import { getDesignSystem } from "../design-systems";
 import { compileDesignSystem } from "../documents/design-system";
 
@@ -464,7 +465,7 @@ export async function handleServeArtifact(
     }
   }
 
-  const wrapped = wrapArtifactHtml({
+  const artifactHtml = wrapArtifactHtml({
     content,
     title: row.title,
     favicon: row.favicon,
@@ -481,6 +482,9 @@ export async function handleServeArtifact(
           }
         : undefined,
   });
+  // A full-page artifact can strand a reader outside the app shell. Keep the
+  // return link and reading controls out of message-bound embedded widgets.
+  const wrapped = isEmbed ? artifactHtml : addReaderUi(artifactHtml, "PidginDocs", "/artifacts");
 
   const isPinned = Boolean(vParam);
   const isPublic = row.visibility === "public";

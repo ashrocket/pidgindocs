@@ -5,6 +5,7 @@ import { sendOwnerEmail, emailWrapper } from "../email";
 import { renderPreviewPng } from "../preview/render";
 import { theme } from "../web/theme";
 import { removeRawTextElements } from "../html-text";
+import { addReaderUi } from "../web/reader-ui";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_WEEK = 7 * 24 * ONE_HOUR;
@@ -153,7 +154,7 @@ function protectionScript(docId: string, logEndpoint: string): string {
 function shareLink(docId: string): string {
   const shareEndpoint = escHtml(`/api/docs/${encodeURIComponent(docId)}/share`);
 
-  return `<a href="#" id="pidgin-share-link" data-share-endpoint="${shareEndpoint}" onclick="(function(e){
+  return `<a href="#" id="pidgin-share-link" data-reader-exclude data-share-endpoint="${shareEndpoint}" onclick="(function(e){
   e.preventDefault();
   var link = e.currentTarget;
   var endpoint = link.getAttribute('data-share-endpoint');
@@ -347,7 +348,7 @@ export async function handleGetDoc(
   ctx.waitUntil(logAccess(env, docId, "view", request));
 
   const workerUrl = env.WORKER_URL || new URL(request.url).origin;
-  const wrapped = wrapHtml(rawHtml, docId, `${workerUrl}/api/docs/log`);
+  const wrapped = addReaderUi(wrapHtml(rawHtml, docId, `${workerUrl}/api/docs/log`), "PidginDocs", "/inbox");
 
   return new Response(wrapped, {
     headers: {
@@ -387,7 +388,7 @@ export async function handleGetInteractiveDoc(
 
   ctx.waitUntil(logAccess(env, docId, "view", request));
 
-  const rendered = ensureViewport(rawHtml);
+  const rendered = addReaderUi(ensureViewport(rawHtml), "PidginDocs", "/inbox");
   return new Response(rendered, {
     headers: {
       "Content-Type": "text/html",
