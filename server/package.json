@@ -47,6 +47,11 @@
     "@resvg/resvg-wasm": "^2.6.2",
     "jose": "^6.2.12",
     "marked": "^18.0.5",
-    "satori": "^0.26.0"
+    "satori": "^0.62.0"
+  },
+  "overrides": {
+    "satori": {
+      "fflate": "0.7.5"
+    }
   }
 }
