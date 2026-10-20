@@ -38,15 +38,20 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.5",
-    "@cloudflare/workers-types": "^5.20261011.1",
-    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^5.20261015.1",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.5",
     "wrangler": "^4.149.0"
   },
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2",
     "jose": "^6.2.12",
-    "marked": "^18.0.5",
-    "satori": "^0.26.0"
+    "marked": "^18.1.1",
+    "satori": "^0.62.0"
+  },
+  "overrides": {
+    "satori": {
+      "fflate": "0.7.5"
+    }
   }
 }

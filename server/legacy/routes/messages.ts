@@ -19,6 +19,7 @@ import {
   type SerializedMessageBlock,
 } from "../messages/store";
 import { isEnhancementProviderConfigured } from "../enhance/provider";
+import { removeRawTextElements } from "../html-text";
 
 // Convert SQLite datetime string ("2026-05-11 12:34:56") to unix timestamp seconds
 function toUnixSeconds(dateStr: unknown): number {
@@ -42,17 +43,15 @@ function escapeHtml(value: string): string {
 }
 
 function stripHtml(value: string): string {
-  return value
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+  return removeRawTextElements(value)
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#\d+;/g, " ")
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .replace(/\s+([.,;:!?])/g, "$1")
     .trim();

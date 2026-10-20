@@ -4,6 +4,7 @@ import { compileDesignSystem } from "./documents/design-system";
 import { listDesignSystems, resolveDesignSystem } from "./design-systems";
 import { typesetDocument } from "./documents/typeset";
 import { isEnhancementProviderConfigured } from "./enhance/provider";
+import { removeRawTextElements } from "./html-text";
 
 const DEFAULT_LIST_LIMIT = 10;
 const MAX_LIST_LIMIT = 25;
@@ -230,15 +231,15 @@ function normalizeWhitespace(value: string): string {
 function decodeEntities(value: string): string {
   return value
     .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 function plainText(value: string): string {
-  return normalizeWhitespace(decodeEntities(value.replace(/<[^>]+>/g, " ")));
+  return normalizeWhitespace(decodeEntities(removeRawTextElements(value).replace(/<[^>]+>/g, " ")));
 }
 
 function oneLineSummary(body: string | null, title: string): string {
