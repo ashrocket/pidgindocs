@@ -1,3 +1,5 @@
+import { removeRawTextElements } from "../html-text";
+
 const COMMON_ENTITY_MAP: Record<string, string> = {
   "&nbsp;": " ",
   "&amp;": "&",
@@ -38,9 +40,7 @@ export function stripMarkdown(text: string): string {
 }
 
 export function htmlToText(html: string): string {
-  const withoutScripts = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ");
+  const withoutScripts = removeRawTextElements(html);
   const withBreaks = withoutScripts
     .replace(/<(br|\/p|\/div|\/li|\/h\d)>/gi, "\n")
     .replace(/<li[^>]*>/gi, "\n- ")

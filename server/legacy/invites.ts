@@ -3,10 +3,26 @@ import type { Env } from "./types";
 function generateInviteCode(): string {
   const words = ["BIRD", "NEST", "WING", "FLOCK", "ROOST", "PERCH"];
   const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  const rng = crypto.getRandomValues(new Uint8Array(7)); // 1 byte for word, 6 for suffix
-  const word = words[rng[0] % words.length];
-  const suffix = Array.from(rng.slice(1)).map((b) => alphabet[b % alphabet.length]).join("");
+  const word = words[unbiasedIndex(words.length)];
+  const suffix = Array.from({ length: 6 }, () => alphabet[unbiasedIndex(alphabet.length)]).join("");
   return `${word}-${suffix}`;
+}
+
+function secureRandomByte(): number {
+  return crypto.getRandomValues(new Uint8Array(1))[0];
+}
+
+/** Select uniformly from 0..maxExclusive-1 using rejection sampling. */
+export function unbiasedIndex(maxExclusive: number, nextByte: () => number = secureRandomByte): number {
+  if (!Number.isInteger(maxExclusive) || maxExclusive < 1 || maxExclusive > 256) {
+    throw new RangeError("maxExclusive must be an integer between 1 and 256");
+  }
+  const acceptedRange = Math.floor(256 / maxExclusive) * maxExclusive;
+  let byte: number;
+  do {
+    byte = nextByte();
+  } while (byte >= acceptedRange);
+  return byte % maxExclusive;
 }
 
 /**
