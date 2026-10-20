@@ -46,7 +46,7 @@
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2",
     "jose": "^6.2.12",
-    "marked": "^18.0.5",
+    "marked": "^18.1.1",
     "satori": "^0.62.0"
   },
   "overrides": {
