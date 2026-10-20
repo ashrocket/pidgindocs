@@ -2,6 +2,8 @@ name: Verify
 
 on:
   pull_request:
+  merge_group:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -13,16 +15,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test change scoping
+        run: node --test .github/ci/tests/scope-check.mjs
+      - name: Determine server scope
+        id: scope
+        run: node .github/ci/scope.mjs
       - uses: actions/setup-node@v4
+        if: steps.scope.outputs.full != 'false'
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci
+        if: steps.scope.outputs.full != 'false'
         working-directory: server
       - run: npx tsc --noEmit
+        if: steps.scope.outputs.full != 'false'
         working-directory: server
       - run: npm test
+        if: steps.scope.outputs.full != 'false'
         working-directory: server
 
   secrets:
