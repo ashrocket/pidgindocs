@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Install PidginCore - PidginCore</title>
+<meta name="description" content="Install PidginCore on Cloudflare Workers. Create the resources, set the values, run it locally, deploy it and check that it works.">
+<link rel="icon" type="image/jpeg" href="/assets/bird-128.jpg">
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<div class="airmail" aria-hidden="true"></div>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="PidginCore home">
+      <img src="/assets/bird-128.jpg" width="128" height="128" alt="">
+      <span>PidginCore</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="/install/" aria-current="page">Install</a></li>
+        <li><a href="/docs/">How it works</a></li>
+        <li><a href="/security/">Security</a></li>
+        <li><a href="https://github.com/ashrocket/pidgindocs">Source</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <div class="page-head">
+      <h1>Install PidginCore</h1>
+      <p class="lede">This guide sets up one installation for one owner on Cloudflare Workers. Read the limits before you use real data.</p>
+    </div>
+
+    <div class="doc">
+      <nav class="toc" aria-label="On this page">
+        <p>On this page</p>
+        <ul>
+          <li><a href="#before">Before you start</a></li>
+          <li><a href="#resources">Create the resources</a></li>
+          <li><a href="#values">Set the values</a></li>
+          <li><a href="#local">Run it locally</a></li>
+          <li><a href="#deploy">Deploy</a></li>
+          <li><a href="#after">After you deploy</a></li>
+          <li><a href="#optional">Optional parts</a></li>
+        </ul>
+      </nav>
+
+      <div class="prose">
+        <section aria-labelledby="before">
+          <h2 id="before">Before you start</h2>
+          <p>You need these items:</p>
+          <ul class="marked">
+            <li>Node.js 22 or later, and npm.</li>
+            <li>A Cloudflare account with Workers, D1, R2, KV, Queues and Durable Objects.</li>
+            <li>A Cloudflare API token limited to the resources that you create.</li>
+            <li>A long random <code>API_KEY</code> and an <code>OWNER_EMAIL</code>.</li>
+          </ul>
+          <p>These items are optional: a mail provider, APNs credentials for your own Apple app, and provider API keys for optional features.</p>
+          <p>Get the code and install the packages:</p>
+<pre tabindex="0" aria-label="Commands to get the code"><code>git clone https://github.com/ashrocket/pidgindocs.git
+cd pidgindocs/server
+npm ci</code></pre>
+        </section>
+
+        <section aria-labelledby="resources">
+          <h2 id="resources">Create the resources</h2>
+          <p>The file <code>server/wrangler.toml</code> is a portable template. It holds example values only. Copy it to a private file if you change its bindings.</p>
+          <p>Wrangler needs access to your account. Run <code>npx wrangler login</code>, or set <code>CLOUDFLARE_API_TOKEN</code> to your scoped token. Then create the resources that the template names:</p>
+<pre tabindex="0" aria-label="Commands to create the Cloudflare resources"><code>npx wrangler d1 create pidgindocs-db
+npx wrangler r2 bucket create pidgindocs-docs
+npx wrangler kv namespace create SESSIONS
+npx wrangler queues create pidgindocs-enhance
+npx wrangler queues create pidgindocs-enhance-dlq</code></pre>
+          <p>Wrangler prints an ID for the D1 database and for the KV namespace. Put each ID in your config in place of the zeros.</p>
+          <p>If you use other names, change the names in your config to match.</p>
+        </section>
+
+        <section aria-labelledby="values">
+          <h2 id="values">Set the values</h2>
+          <p>Set <code>WORKER_URL</code> to the HTTPS URL that Cloudflare gives your Worker. Use your own domain if you set one up. Do not add a trailing slash.</p>
+          <p>Put <code>WORKER_URL</code> and <code>OWNER_EMAIL</code> in the <code>[vars]</code> block of your config. Never put a credential in the config. Use <code>.dev.vars</code> for local work. Use Cloudflare Worker secrets for deployment. Never commit these values.</p>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Values to set">
+            <table>
+              <thead>
+                <tr><th scope="col">Name</th><th scope="col">Needed</th><th scope="col">Purpose</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>API_KEY</code></td><td>Yes</td><td>The bearer token for agents. Make it with <code>openssl rand -hex 32</code>.</td></tr>
+                <tr><td><code>OWNER_EMAIL</code></td><td>Yes</td><td>The email address of the owner account.</td></tr>
+                <tr><td><code>WORKER_URL</code></td><td>Yes</td><td>The final HTTPS address of your Worker.</td></tr>
+                <tr><td><code>RESEND_API_KEY</code> and <code>RESEND_FROM</code></td><td>For web sign-in</td><td>Send the sign-in link by email with Resend.</td></tr>
+                <tr><td><code>ANTHROPIC_API_KEY</code></td><td>No</td><td>Document enhancement and design-system import.</td></tr>
+                <tr><td><code>APNS_KEY_ID</code>, <code>APNS_TEAM_ID</code>, <code>APNS_PRIVATE_KEY</code></td><td>No</td><td>Push notifications for an Apple app that you sign.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note">
+            <p><strong>Web sign-in needs email.</strong> The web app signs you in with a link that the server sends by email. Set the Resend values, or add a <code>send_email</code> binding named <code>MAIL</code> to your config.</p>
+            <p>Agents and the shell client do not need email. They sign in with <code>API_KEY</code>.</p>
+          </div>
+        </section>
+
+        <section aria-labelledby="local">
+          <h2 id="local">Run it locally</h2>
+          <p>Copy <code>server/.dev.vars.example</code> to <code>server/.dev.vars</code>. Replace every placeholder. Then run these commands:</p>
+<pre tabindex="0" aria-label="Commands to run PidginCore locally"><code>cd server
+npm run db:migrate
+npm run dev</code></pre>
+          <p>Open the local Worker URL. Request a login link. Complete the owner setup flow.</p>
+          <p>Local development does not send email. Set <code>RESEND_API_KEY</code> in <code>.dev.vars</code> if you want the link by email.</p>
+        </section>
+
+        <section aria-labelledby="deploy">
+          <h2 id="deploy">Deploy</h2>
+          <p>Check your Cloudflare bindings and permissions. Then deploy with the template. A deploy changes your account, so do it on purpose.</p>
+          <ol class="steps">
+            <li>Apply the database migration to your remote database.
+<pre tabindex="0" aria-label="Command to apply the migration"><code>npx wrangler d1 migrations apply DB --remote --config wrangler.toml</code></pre></li>
+            <li>Deploy the Worker.
+<pre tabindex="0" aria-label="Command to deploy the Worker"><code>npx wrangler deploy --config wrangler.toml</code></pre></li>
+            <li>Set <code>API_KEY</code> as a secret. Wrangler asks you for the value.
+<pre tabindex="0" aria-label="Command to set the API key secret"><code>npx wrangler secret put API_KEY --config wrangler.toml</code></pre></li>
+          </ol>
+          <p>Back up your own D1 and R2 data before you apply future migrations.</p>
+        </section>
+
+        <section aria-labelledby="after">
+          <h2 id="after">After you deploy</h2>
+          <p>Check that the Worker answers. Use your own address:</p>
+<pre tabindex="0" aria-label="Command to check the health endpoint"><code>curl https://your-worker.example.com/health</code></pre>
+          <p>The answer is a JSON body that shows a healthy status.</p>
+          <p>Next, point the shell client at your Worker:</p>
+<pre tabindex="0" aria-label="Commands to use the shell client"><code>export PIDGINDOCS_URL="https://your-worker.example.com"
+export PIDGINDOCS_API_KEY="your-owner-api-key"
+scripts/pidgindocs.sh check
+scripts/pidgindocs.sh send --type status --title "Deployment ready" --body "Worker is responding"</code></pre>
+          <p>You can create an owner API key on the <code>/setup</code> page of your Worker. The shell client needs <code>curl</code> and <code>jq</code>.</p>
+          <p>A successful deploy does not prove that everything works. Check your own domain, sign-in, email, storage and backups.</p>
+        </section>
+
+        <section aria-labelledby="optional">
+          <h2 id="optional">Optional parts</h2>
+          <p><strong>Workers AI.</strong> Document enhancement can use Workers AI. It can add usage charges. Add the <code>[ai]</code> binding only if you want it.</p>
+          <p><strong>Apple clients.</strong> Apple clients are not in this repository. Each one needs its own reviewed app identity, signing team, API origin and universal-link domains. It also needs a list of third-party assets and licenses before release.</p>
+          <p>The <a href="https://github.com/ashrocket/pidgindocs/blob/main/INSTALL.md">INSTALL.md file</a> in the repository holds the same steps as plain text.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div>
+      <p>PidginCore is open source under the MIT license.</p>
+      <p>This website is a static site. It has no accounts, no scripts and no trackers.</p>
+    </div>
+    <ul>
+      <li><a href="https://github.com/ashrocket/pidgindocs">Source on GitHub</a></li>
+      <li><a href="https://github.com/ashrocket/pidgindocs/blob/main/LICENSE">License</a></li>
+      <li><a href="https://github.com/ashrocket/pidgindocs/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a></li>
+    </ul>
+  </div>
+</footer>
+<div class="airmail" aria-hidden="true"></div>
+</body>
+</html>
