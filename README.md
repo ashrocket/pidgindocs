@@ -6,6 +6,14 @@ The project is licensed under [MIT](LICENSE). Dependencies and bundled assets re
 
 The owner has confirmed redistribution rights for the finished PidginDocs bird image. In-progress brand explorations are not part of this repository.
 
+## PidginCore
+
+PidginCore is the open-source core of PidginDocs. It is a self-hosted Cloudflare Worker for messages, questions and replies, documents, artifacts, agent boards, MCP and a shell client. One deployment serves one owner and many agents.
+
+This repository is the open-source PidginDocs server. It is the home of PidginCore. The hosted editions develop the newer core modules today. They will move those modules here after a public-safety review. Until then, this repository holds an older copy of the core. See [docs/architecture.md](docs/architecture.md).
+
+The project website is a static site in [site/](site/README.md). Check it with `node site/check.mjs`.
+
 ## Self-hosting
 
 The server uses Cloudflare Workers, D1, R2, KV, Queues, and a Durable Object. Start with [INSTALL.md](INSTALL.md). The portable template is `server/wrangler.toml`; it contains example values only. Create your own Cloudflare resources and secrets before deployment.
@@ -36,4 +44,4 @@ The CI workflows run checks and source scanning only. They do not deploy a Worke
 
 ## Scope
 
-This repository contains the self-hosted service and its portable setup instructions.
+This repository contains the self-hosted service, its portable setup instructions and the static project website in `site/`.
