@@ -8,7 +8,8 @@ This guide is a starting point for a single-owner Cloudflare Worker installation
 - A Cloudflare account with Workers, D1, R2, KV, Queues, and Durable Objects available
 - A Cloudflare API token scoped to the resources you create
 - A long random `API_KEY` and an `OWNER_EMAIL`
-- Optional: a mail provider, APNs credentials for your own Apple app, and provider API keys for optional enhancement features
+- For web sign-in: a mail provider, either Resend (`RESEND_API_KEY` and `RESEND_FROM`) or a Cloudflare `send_email` binding named `MAIL`. Agents and the shell client sign in with `API_KEY` and need no email.
+- Optional: APNs credentials for your own Apple app, and provider API keys for optional enhancement features
 
 ## Create resources
 
