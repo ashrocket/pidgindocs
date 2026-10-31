@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Security policy - PidginCore</title>
+<meta name="description" content="How to report a security vulnerability in PidginCore in private, and what to check before you use the software with real data.">
+<link rel="icon" type="image/jpeg" href="/assets/bird-128.jpg">
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<div class="airmail" aria-hidden="true"></div>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="PidginCore home">
+      <img src="/assets/bird-128.jpg" width="128" height="128" alt="">
+      <span>PidginCore</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="/install/">Install</a></li>
+        <li><a href="/docs/">How it works</a></li>
+        <li><a href="/security/" aria-current="page">Security</a></li>
+        <li><a href="https://github.com/ashrocket/pidgindocs">Source</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <div class="page-head">
+      <h1>Security policy</h1>
+      <p class="lede">Report a vulnerability in private. Then read the notes below before you store real data.</p>
+    </div>
+
+    <div class="doc">
+      <nav class="toc" aria-label="On this page">
+        <p>On this page</p>
+        <ul>
+          <li><a href="#report">Report a vulnerability</a></li>
+          <li><a href="#versions">Supported versions</a></li>
+          <li><a href="#before">Before you use real data</a></li>
+          <li><a href="#testing">Where to test</a></li>
+        </ul>
+      </nav>
+
+      <div class="prose">
+        <section aria-labelledby="report">
+          <h2 id="report">Report a vulnerability</h2>
+          <p>Use the private report form of the repository. On GitHub, open <strong>Security</strong>, then <strong>Report a vulnerability</strong>.</p>
+          <div class="actions">
+            <a class="button button-primary" href="https://github.com/ashrocket/pidgindocs/security/advisories/new">Open the private report form</a>
+          </div>
+          <p>Do not put vulnerability details in a public issue.</p>
+          <p>Include only the details that someone needs to reproduce the problem. Do not include real user data, API keys or other secrets.</p>
+        </section>
+
+        <section aria-labelledby="versions">
+          <h2 id="versions">Supported versions</h2>
+          <p>The project has not yet set supported versions or response times.</p>
+        </section>
+
+        <section aria-labelledby="before">
+          <h2 id="before">Before you use real data</h2>
+          <p>Review the code. Set up your own secrets and resources. Then check these items yourself:</p>
+          <ul class="marked">
+            <li>Authentication.</li>
+            <li>Access control.</li>
+            <li>Backups.</li>
+            <li>Deletion.</li>
+          </ul>
+          <p>The <a href="/docs/#data">docs page</a> lists the optional services that send data outside your Cloudflare account. Each one stays off until you set it up.</p>
+        </section>
+
+        <section aria-labelledby="testing">
+          <h2 id="testing">Where to test</h2>
+          <p>Do not test against <code>pidgindocs.example.workers.dev</code>. That name is a placeholder in the examples.</p>
+          <p>Do not test against any other third-party service. Do not test against infrastructure that you do not own or have explicit permission to assess.</p>
+          <p>Test your own deployment instead.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div>
+      <p>PidginCore is open source under the MIT license.</p>
+      <p>This website is a static site. It has no accounts, no scripts and no trackers.</p>
+    </div>
+    <ul>
+      <li><a href="https://github.com/ashrocket/pidgindocs">Source on GitHub</a></li>
+      <li><a href="https://github.com/ashrocket/pidgindocs/blob/main/LICENSE">License</a></li>
+      <li><a href="https://github.com/ashrocket/pidgindocs/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a></li>
+    </ul>
+  </div>
+</footer>
+<div class="airmail" aria-hidden="true"></div>
+</body>
+</html>
