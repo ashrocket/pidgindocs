@@ -12,9 +12,26 @@ export async function loginPage(env: Env, error?: string, next?: string, view: L
   const sent = Boolean(view.challenge);
   const microsoft = Boolean(env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET);
   const destination = next || "/toc";
-  const google = env.GOOGLE_WEB_CLIENT_ID ? `<div class="google-provider"><script src="https://accounts.google.com/gsi/client" async defer></script>
-    <div id="g_id_onload" data-client_id="${esc(env.GOOGLE_WEB_CLIENT_ID)}" data-ux_mode="redirect" data-login_uri="${esc(env.WORKER_URL || '')}/auth/oauth/google/web" data-nonce="${nonceHash}" data-auto_prompt="false"></div>
-    <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="continue_with" data-shape="rectangular" data-width="376" data-logo_alignment="center"></div><script>var googleButton=document.querySelector(".g_id_signin");if(googleButton)googleButton.dataset.width=String(Math.min(376,Math.floor(googleButton.parentElement.getBoundingClientRect().width)));</script></div>` : '';
+  const google = env.GOOGLE_WEB_CLIENT_ID ? `<div class="google-provider" id="pidgin-google-provider">
+    <div id="pidgin-google-config" data-client_id="${esc(env.GOOGLE_WEB_CLIENT_ID)}" data-login_uri="${esc(env.WORKER_URL || '')}/auth/oauth/google/web" data-nonce="${nonceHash}" hidden></div>
+    <div id="pidgin-google-button" data-text="continue_with"></div>
+    <script>
+    function initializePidginGoogle(){
+      var container=document.getElementById('pidgin-google-provider'),button=document.getElementById('pidgin-google-button'),config=document.getElementById('pidgin-google-config');
+      if(!container||!button||!config||!window.google)return;
+      google.accounts.id.initialize({client_id:config.getAttribute('data-client_id'),ux_mode:'redirect',login_uri:config.getAttribute('data-login_uri'),nonce:config.getAttribute('data-nonce'),auto_select:false});
+      var previousWidth=0,resizeTimer;
+      function render(){
+        var width=Math.min(376,Math.floor(container.getBoundingClientRect().width));
+        if(width<1||width===previousWidth)return;
+        previousWidth=width;button.replaceChildren();
+        google.accounts.id.renderButton(button,{type:'standard',size:'large',theme:'outline',text:'continue_with',shape:'rectangular',width:String(width),logo_alignment:'center'});
+      }
+      function resized(){clearTimeout(resizeTimer);resizeTimer=setTimeout(render,100);}
+      render();
+      if(window.ResizeObserver)new ResizeObserver(resized).observe(container);else window.addEventListener('resize',resized);
+    }
+    </script><script src="https://accounts.google.com/gsi/client" async defer onload="initializePidginGoogle()"></script></div>` : '';
   const microsoftButton = microsoft ? `<a class="provider" href="/auth/oauth/microsoft/start?next=${encodeURIComponent(destination)}"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 21 21"><path fill="#f25022" d="M0 0h10v10H0z"/><path fill="#7fba00" d="M11 0h10v10H11z"/><path fill="#00a4ef" d="M0 11h10v10H0z"/><path fill="#ffb900" d="M11 11h10v10H11z"/></svg>Continue with Microsoft</a>` : '';
   const heading = view.handoff ? "Return to your<br>sign-in tab" : sent ? "Check your email" : "A place for<br>what comes next.";
   const lede = view.handoff ? "You opened this link in a different browser." : sent ? "Continue with your sign-in link or verification code." : "Your documents, questions, and replies.";
