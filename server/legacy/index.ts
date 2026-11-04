@@ -26,8 +26,9 @@ import { handleGetClientBuild, handlePostClientBuild } from "./routes/client-bui
 import { handlePostReply } from "./routes/reply";
 import { handleRegister, handleGetRegistry, handleDeregister, handleHeartbeat, handleGetInstance } from "./routes/registry";
 import { ensureOwnerExists, findActiveUserByEmail } from "./auth-utils";
-import { handleLogin, handleVerify, handleRegisterDevice, handleAppleAppSiteAssociation, handleInviteUser, handleAcceptInvite, handleOAuthLoginWeb } from "./routes/auth";
+import { handleLogin, handleVerify, handleVerifyCode, handleRegisterDevice, handleAppleAppSiteAssociation, handleInviteUser, handleAcceptInvite, handleOAuthLoginWeb } from "./routes/auth";
 import { handleOAuthLogin } from "./auth/oauth-login";
+import { startMicrosoftLogin, finishMicrosoftLogin, microsoftConnectPage } from "./auth/microsoft";
 import { handleLinkIdentity, handleListIdentities, handleUnlinkIdentity } from "./routes/identities";
 import { handleGetProfile, handleRevokeDevice, loadProfile } from "./routes/profile";
 import { profilePage } from "./web/profile";
@@ -724,10 +725,15 @@ export default {
       }
 
       // Auth
+      if (path === "/auth/microsoft" && method === "GET") return microsoftConnectPage(request, env);
+      if (path === "/auth/oauth/microsoft/start" && method === "GET") return startMicrosoftLogin(request, env);
+      if (path === "/auth/oauth/microsoft/link" && method === "POST") return startMicrosoftLogin(request, env, true);
+      if (path === "/auth/oauth/microsoft/web" && method === "GET") return finishMicrosoftLogin(request, env);
       if (path === "/auth/login" && method === "POST") {
         return await handleLogin(request, env);
       }
-      if (path === "/auth/verify" && method === "GET") {
+      if (path === "/auth/verify-code" && method === "POST") return handleVerifyCode(request, env);
+      if (path === "/auth/verify" && (method === "GET" || method === "POST")) {
         return await handleVerify(request, env);
       }
       if (path === "/auth/oauth/apple" && method === "POST") {
@@ -1134,7 +1140,7 @@ export default {
       }
 
       if (path === "/auth/login-form" && method === "GET") {
-        return await loginPage(env, undefined, url.searchParams.get("next") || undefined);
+        return await loginPage(env, undefined, url.searchParams.get("next") || undefined, {email:url.searchParams.get("email") || ""});
       }
 
       if (path === "/members-only" && method === "GET") {
@@ -1142,22 +1148,16 @@ export default {
       }
 
       if (path === "/auth/login-form" && method === "POST") {
-        const formData = await request.formData();
-        const email = formData.get("email") as string;
+        let formData:FormData;
+        try { formData = await request.formData(); }
+        catch { return loginPage(env, "The form could not be read. Please try again."); }
+        const email = String(formData.get("email") || "").trim().toLowerCase();
         const next = (formData.get("next") as string) || undefined;
-        if (!email) return await loginPage(env, "Email required");
-        // Invite-only: send a non-member to the members-only page rather than a
-        // silent "check your email" for a link that will never arrive. (This
-        // reveals membership on the web form — acceptable for an invite-only
-        // tool.) Linked identities count as membership.
-        const member = await findActiveUserByEmail(env, email);
-        if (!member) {
-          return new Response(null, { status: 303, headers: { Location: "/members-only" } });
-        }
+        if (!email) return await loginPage(env, "Enter your email address.", next);
         // Reuse the JSON login handler
         const loginRequest = new Request(request.url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "CF-Connecting-IP":request.headers.get("CF-Connecting-IP") || "unknown" },
           body: JSON.stringify({ email, next }),
         });
         const loginResponse = await handleLogin(loginRequest, env);
@@ -1169,18 +1169,11 @@ export default {
           } catch {}
           return await loginPage(env, error, next);
         }
-        return new Response(
-          `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Check Email</title>
-          <style>body{font-family:Inter,sans-serif;background:#FBF7F0;display:flex;
-          justify-content:center;align-items:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box}
-          .card{background:#fff;border-radius:12px;padding:2.5rem;width:100%;max-width:380px;
-          text-align:center;box-shadow:0 2px 20px rgba(0,0,0,.06)}
-          h2{color:#3D2E2A;margin:0 0 .75rem;font-size:1.4rem}p{color:#6B5550;font-size:1rem;line-height:1.5;margin:0}</style></head>
-          <body><div class="card"><h2>Check your email</h2>
-          <p>If that email is registered, PidginDocs sent you a login link. It expires in 5 minutes.</p>
-          </div></body></html>`,
-          { headers: { "Content-Type": "text/html" } }
-        );
+        const result = await loginResponse.json() as {data:{challenge:string}};
+        const confirmation = await loginPage(env, undefined, next, {email, challenge:result.data.challenge});
+        const proofCookie = loginResponse.headers.get("Set-Cookie");
+        if (proofCookie) confirmation.headers.append("Set-Cookie", proofCookie);
+        return confirmation;
       }
 
       if (path === "/auth/logout" && method === "GET") {
