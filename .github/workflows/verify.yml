@@ -40,7 +40,7 @@ jobs:
         working-directory: server
       - name: Agent client tests
         if: steps.scope.outputs.full != 'false'
-        run: node --test scripts/tests/pidgindocs-mcp-proxy.test.mjs
+        run: node --test scripts/tests/pidgindocs-mcp-proxy.test.mjs scripts/tests/local-endpoint-contract.test.mjs
 
   secrets:
     runs-on: ubuntu-latest

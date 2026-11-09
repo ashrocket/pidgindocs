@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { startFakeLocal, startFakeServer } from "./fake-local-endpoint.mjs";
+import { startFake, startFakeServer } from "./fake-local-endpoint.mjs";
 import { callLocal, callServer, callTool, readDiscovery } from "../pidgindocs-mcp-proxy.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -26,7 +26,7 @@ function writeDiscovery(overrides = {}, mode = 0o600) {
 
 beforeEach(async () => {
   dir = mkdtempSync(path.join(tmpdir(), "pidgindocs-proxy-"));
-  local = await startFakeLocal({ token: TOKEN });
+  local = await startFake({ token: TOKEN });
   server = await startFakeServer();
   process.env.PIDGINDOCS_URL = server.url;
   process.env.PIDGINDOCS_API_KEY = API_KEY;
@@ -68,7 +68,7 @@ describe("falling back to the server", () => {
   });
 
   it("a 503 unavailable: server called", async () => {
-    local.mode = "unavailable-503";
+    local.behaviour = "unavailable";
     writeDiscovery();
     const r = await callTool("pidgin_status", status);
     assert.equal(local.calls.length, 1);
@@ -77,7 +77,7 @@ describe("falling back to the server", () => {
   });
 
   it("status unavailable in the result: server called", async () => {
-    local.mode = "unavailable-status";
+    local.behaviour = "unavailable-status";
     writeDiscovery();
     await callTool("pidgin_status", status);
     assert.equal(server.calls.length, 1);
@@ -118,7 +118,7 @@ describe("never falling back once the socket connected", () => {
   afterEach(() => { delete process.env.PIDGINDOCS_LOCAL_TOTAL_TIMEOUT_MS; });
 
   it("an endpoint that replies after 1.5 s is handled, with no server call", async () => {
-    local.mode = "slow";
+    local.behaviour = "slow";
     writeDiscovery();
     const r = await callTool("pidgin_status", status);
     assert.equal(r.via, "local");
@@ -127,7 +127,7 @@ describe("never falling back once the socket connected", () => {
   });
 
   it("an endpoint that accepts and never replies ends in local_timeout, with no server call", async () => {
-    local.mode = "hang";
+    local.behaviour = "hang";
     process.env.PIDGINDOCS_LOCAL_TOTAL_TIMEOUT_MS = "1200";
     writeDiscovery();
     await assert.rejects(callTool("pidgin_status", status), /local_timeout/);
@@ -145,7 +145,7 @@ describe("never falling back once the socket connected", () => {
   });
 
   it("a connection aborted after the headers is local_error, with no server call", async () => {
-    local.mode = "abort-after-headers";
+    local.behaviour = "abort-after-headers";
     writeDiscovery();
     await assert.rejects(callTool("pidgin_status", status), /local_error/);
     assert.equal(local.writes.length, 1);
@@ -153,7 +153,7 @@ describe("never falling back once the socket connected", () => {
   });
 
   it("a redirect is never followed: local_error, and the target is not called", async () => {
-    local.mode = "redirect";
+    local.behaviour = "redirect";
     local.redirectTo = `${server.url}/api/messages`;
     writeDiscovery();
     await assert.rejects(callTool("pidgin_status", status), /local_error: redirect not followed/);
@@ -161,7 +161,7 @@ describe("never falling back once the socket connected", () => {
   });
 
   it("a redirect to another loopback port is not followed either", async () => {
-    local.mode = "redirect";
+    local.behaviour = "redirect";
     local.redirectTo = "http://127.0.0.1:1/mcp";
     writeDiscovery();
     const r = await callLocal("pidgin_status", status, await readDiscovery());
@@ -170,7 +170,7 @@ describe("never falling back once the socket connected", () => {
 
 
   it("error-after-write: server not called, error returned", async () => {
-    local.mode = "error-after-write";
+    local.behaviour = "error-after-write";
     writeDiscovery();
     await assert.rejects(callTool("pidgin_draft_put", { key: "abcdefgh", kind: "document", title: "t", html: "<p>x</p>" }), /failed after write/);
     assert.equal(local.writes.length, 1);
@@ -340,7 +340,7 @@ describe("stdio MCP server and CLI", () => {
   });
 
   it("--local with an error after a write exits 1 and does not exit 75", async () => {
-    local.mode = "error-after-write";
+    local.behaviour = "error-after-write";
     writeDiscovery();
     const r = await run(["--local", "pidgin_status", JSON.stringify(status)]);
     assert.equal(r.code, 1);
