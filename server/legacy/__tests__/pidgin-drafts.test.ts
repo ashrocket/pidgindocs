@@ -40,6 +40,23 @@ function wrap(base: Env, overrides: Record<string, (real: any, ...args: any[]) =
   return { ...base, DOCS } as Env;
 }
 const MIN = 60_000;
+
+// An env whose receipt "done" updates throw, as a database error after a publish would.
+function receiptWriteFails(base: Env): Env {
+  const DB = new Proxy(base.DB as any, {
+    get(target, prop: string) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          if (/UPDATE batch_receipts SET status = \?/.test(sql)) throw new Error("D1 unavailable");
+          return target.prepare(sql);
+        };
+      }
+      const v = target[prop];
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+  return { ...base, DB } as Env;
+}
 const newKey = () => `k${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 
 async function makeUser(label: string) {
@@ -187,11 +204,45 @@ describe("drafts", () => {
     const head = (await env.DOCS.head(u.objectKey(key)))!;
     await env.DB.prepare(
       "INSERT INTO batch_receipts (owner, key, claim_id, status) VALUES (?, ?, 'held', 'pending')"
-    ).bind(u.id, `draft-commit:${key}:${head.etag}`).run();
+    ).bind(u.id, `draft-commit:${key}:${head.etag}:${head.uploaded.getTime()}`).run();
     await commitStaleDrafts(env, 10 * MIN, head.uploaded.getTime() + 11 * MIN);
     expect(meter.reserveCalls).toHaveLength(0);
     expect(await u.docs()).toBe(0);
     expect(await u.exists(key)).toBe(true);
+  });
+
+  it("the same content uploaded again after a commit publishes again", async () => {
+    const u = await makeUser("b8");
+    const key = newKey();
+    await u.put(key, docDraft());
+    expect((await u.commit(key)).units).toBe("draft_commit=1");
+    await new Promise((r) => setTimeout(r, 5)); // a distinct upload time
+    await u.put(key, docDraft());
+    const again = await u.commit(key);
+    expect(again.units).toBe("draft_commit=1");
+    expect(await u.docs()).toBe(2);
+  });
+
+  it("a receipt write that throws after a good publish deletes the draft and never re-publishes", async () => {
+    const u = await makeUser("b9");
+    const meter = installFakeMeter(10);
+    const key = newKey();
+    await u.put(key, docDraft());
+    const failing = receiptWriteFails(env);
+    const r = await commitDraft(failing, u.id, key);
+    expect(r.status).toBe(200);
+    expect(await u.docs()).toBe(1);
+    expect(await u.exists(key)).toBe(false);
+    await u.put(key, docDraft());
+    const t2 = (await env.DOCS.head(u.objectKey(key)))!.uploaded.getTime();
+    // The cron path: publish succeeds, the receipt write throws, reservation kept, draft removed.
+    await commitStaleDrafts(failing, 10 * MIN, t2 + 11 * MIN);
+    expect(await u.docs()).toBe(2);
+    expect(await u.exists(key)).toBe(false);
+    expect(meter.settleCalls).toHaveLength(0);
+    expect(meter.remaining).toBe(9);
+    const pending = await env.DB.prepare("SELECT COUNT(*) AS n FROM batch_receipts WHERE owner = ? AND status = 'pending'").bind(u.id).first<{ n: number }>();
+    expect(pending!.n).toBe(2);
   });
 
   it("a stale base_version is 409 and keeps the draft", async () => {

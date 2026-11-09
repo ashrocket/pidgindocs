@@ -157,7 +157,8 @@ export async function commitDraft(
   const object = await env.DOCS.get(objectKey);
   if (!object && !idem) return failure(404, "draft not found");
   const etag = object?.etag;
-  const receiptKey = `draft-commit:${key}:${idem ?? etag}`;
+  // etag is a content hash; the upload time makes a new upload of the same text a new draft.
+  const receiptKey = `draft-commit:${key}:${idem ?? `${etag}:${object?.uploaded.getTime()}`}`;
   const claimId = crypto.randomUUID();
   const claim = await claimReceipt(env, userId, receiptKey, claimId);
   if (!claim.won) {
@@ -178,7 +179,17 @@ export async function commitDraft(
       await releaseReceipt(env, userId, receiptKey, claimId); // a retry may run again
       return result;
     }
-    const done = await finishReceipt(env, userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+    let done = false;
+    try {
+      done = await finishReceipt(env, userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+    } catch (err) {
+      // Published but the receipt write failed. Leave the claim pending: the
+      // sweep abandons it, so the key never runs again. Remove the draft so
+      // nothing re-publishes it; the items stay written.
+      console.error("draft receipt write failed after a publish", err);
+      await deleteIfEtag(env, objectKey, etag);
+      return { ...result, units: "draft_commit=1" };
+    }
     if (!done) return failure(409, "commit_abandoned");
     await deleteIfEtag(env, objectKey, etag);
     return { ...result, units: "draft_commit=1" };
@@ -216,7 +227,7 @@ async function commitIdleDraft(env: Env, objectKey: string, now: number): Promis
   const object = await env.DOCS.get(objectKey);
   if (!object) return "skipped";
   const etag = object.etag;
-  const receiptKey = `draft-commit:${who.key}:${etag}`;
+  const receiptKey = `draft-commit:${who.key}:${etag}:${object.uploaded.getTime()}`;
   const claimId = crypto.randomUUID();
   const claim = await claimReceipt(env, who.userId, receiptKey, claimId);
   if (!claim.won) {
@@ -240,7 +251,13 @@ async function commitIdleDraft(env: Env, objectKey: string, now: number): Promis
       console.error("draft commit failed", err);
     }
     if (result?.status === 200) {
-      await finishReceipt(env, who.userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+      try {
+        await finishReceipt(env, who.userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+      } catch (err) {
+        // Published, receipt write failed: leave the claim pending for the
+        // sweep, keep the reservation, and remove the draft so it is not re-published.
+        console.error("draft receipt write failed after a publish", err);
+      }
       await deleteIfEtag(env, objectKey, etag);
       return "committed";
     }
