@@ -3,8 +3,9 @@
 import http from "node:http";
 
 // mode: ok | unavailable-503 | unavailable-status | error-after-write | hang
+//       | slow (replies after state.delayMs) | abort-after-headers | redirect (to state.redirectTo)
 export async function startFakeLocal({ token = "tok-local", mode = "ok" } = {}) {
-  const state = { calls: [], writes: [], acceptTokens: [token], mode, port: 0 };
+  const state = { calls: [], writes: [], acceptTokens: [token], mode, port: 0, delayMs: 1500, redirectTo: "" };
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => { raw += c; });
@@ -17,12 +18,29 @@ export async function startFakeLocal({ token = "tok-local", mode = "ok" } = {}) 
         res.writeHead(401).end();
         return;
       }
-      if (state.mode === "hang") return; // accept the connection, never answer
+      if (state.mode === "hang") { state.writes.push({ tool: "(unanswered)" }); return; } // accept, never answer
       const rpc = JSON.parse(raw);
       const tool = rpc.params?.name;
       const reply = (status, body) => {
         res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
       };
+      if (state.mode === "abort-after-headers") {
+        state.writes.push({ tool, args: rpc.params?.arguments });
+        res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "500" });
+        res.write("{");
+        setTimeout(() => res.socket.destroy(), 20);
+        return;
+      }
+      if (state.mode === "redirect") {
+        state.writes.push({ tool, args: rpc.params?.arguments });
+        res.writeHead(302, { Location: state.redirectTo }).end();
+        return;
+      }
+      if (state.mode === "slow") {
+        state.writes.push({ tool, args: rpc.params?.arguments });
+        setTimeout(() => reply(200, { jsonrpc: "2.0", id: rpc.id, result: { structuredContent: { ok: true, via: "local", tool } } }), state.delayMs);
+        return;
+      }
       if (state.mode === "unavailable-503") return reply(503, { status: "unavailable" });
       if (state.mode === "unavailable-status") {
         return reply(200, { jsonrpc: "2.0", id: rpc.id, result: { structuredContent: { status: "unavailable" } } });

@@ -7,7 +7,9 @@
 //   node pidgindocs-mcp-proxy.mjs --call  <tool> <json>   local, then server
 //
 // The local token goes only to http://127.0.0.1 and is never printed or logged.
-import { readFile, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open } from "node:fs/promises";
+import http from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +17,9 @@ import { fileURLToPath } from "node:url";
 export const EXIT_FALL_BACK = 75;
 const CONNECT_TIMEOUT_MS = 700;
 const TOTAL_TIMEOUT_MS = 60_000;
+const LOOPBACK = "127.0.0.1";
+
+const totalTimeoutMs = () => Number(process.env.PIDGINDOCS_LOCAL_TOTAL_TIMEOUT_MS) || TOTAL_TIMEOUT_MS;
 
 function defaultPaths() {
   const paths = [];
@@ -30,54 +35,87 @@ function pidAlive(pid) {
   catch (err) { return err.code === "EPERM"; }
 }
 
-async function readOne(file) {
+// Opened without following symlinks and checked on the open handle, so the
+// file cannot be swapped between the check and the read.
+async function readOne(file, uid) {
+  let fh;
   try {
-    const info = await stat(file);
-    if (!info.isFile() || (info.mode & 0o777) !== 0o600) return null;
-    const d = JSON.parse(await readFile(file, "utf8"));
+    fh = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const info = await fh.stat();
+    if (!info.isFile()) return null;
+    if (uid !== undefined && info.uid !== uid) return null; // owned by this user only
+    if ((info.mode & 0o777) !== 0o600) return null; // no group or other bits
+    const d = JSON.parse(await fh.readFile("utf8"));
+    if (d.host !== undefined && d.host !== LOOPBACK) return null; // loopback only, exactly
     if (!Number.isInteger(d.port) || d.port < 1024 || d.port > 65535) return null;
     if (typeof d.token !== "string" || !d.token) return null;
     if (!pidAlive(d.pid)) return null;
     return { port: d.port, token: d.token, pid: d.pid, version: d.version };
   } catch {
-    return null;
+    return null; // missing, a symlink (ELOOP), unreadable or malformed
+  } finally {
+    await fh?.close().catch(() => {});
   }
 }
 
 // First valid file wins. Missing, unreadable, not mode 0600, a port outside
 // 1024-65535 or a dead pid means that path offers no local endpoint.
-export async function readDiscovery(paths = defaultPaths()) {
+export async function readDiscovery(paths = defaultPaths(), { uid = process.getuid?.() } = {}) {
   for (const file of paths) {
-    const d = await readOne(file);
+    const d = await readOne(file, uid);
     if (d) return d;
   }
   return null;
 }
 
-async function postOnce(tool, args, d) {
-  const connect = new AbortController();
-  const total = new AbortController();
-  const connectTimer = setTimeout(() => connect.abort(), CONNECT_TIMEOUT_MS);
-  const totalTimer = setTimeout(() => total.abort(), TOTAL_TIMEOUT_MS);
-  const signal = AbortSignal.any([connect.signal, total.signal]);
-  try {
-    const res = await fetch(`http://127.0.0.1:${d.port}/mcp`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${d.token}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
-      signal,
+// One POST to 127.0.0.1. `reached` is false only when the socket never
+// connected (refused, or no TCP connect within 700 ms): nothing was sent, so
+// the caller may use the server. Once the socket connects the request goes
+// out, and from then on every outcome is final: a slow, failed, aborted or
+// redirected response is an error to the caller and is never resent.
+function postOnce(tool, args, d) {
+  const payload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } });
+  return new Promise((resolve) => {
+    let connected = false;
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectTimer);
+      clearTimeout(totalTimer);
+      resolve(value);
+    };
+    const req = http.request({
+      host: LOOPBACK, port: d.port, path: "/mcp", method: "POST", agent: false,
+      headers: {
+        "Content-Type": "application/json", Accept: "application/json",
+        "Content-Length": Buffer.byteLength(payload), Authorization: `Bearer ${d.token}`,
+      },
     });
-    clearTimeout(connectTimer); // a byte arrived: the endpoint has the call
-    const text = await res.text();
-    return { reached: true, status: res.status, text };
-  } catch {
-    // Connect error, or the 700 ms connect timer fired, or the 60 s total
-    // timer fired before any byte: nothing was accepted, so fall back.
-    return { reached: false };
-  } finally {
-    clearTimeout(connectTimer);
-    clearTimeout(totalTimer);
-  }
+    const connectTimer = setTimeout(() => {
+      if (!connected) { req.destroy(); finish({ reached: false }); }
+    }, CONNECT_TIMEOUT_MS);
+    const totalTimer = setTimeout(() => {
+      req.destroy();
+      finish(connected ? { reached: true, error: "local_timeout" } : { reached: false });
+    }, totalTimeoutMs());
+    req.on("socket", (socket) => {
+      const onConnect = () => { connected = true; clearTimeout(connectTimer); };
+      if (socket.connecting) socket.once("connect", onConnect); else onConnect();
+    });
+    req.on("error", () => finish(connected ? { reached: true, error: "local_error" } : { reached: false }));
+    req.on("response", (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("error", () => finish({ reached: true, error: "local_error" }));
+      res.on("aborted", () => finish({ reached: true, error: "local_error" }));
+      res.on("close", () => {
+        if (!res.complete) finish({ reached: true, error: "local_error" });
+      });
+      res.on("end", () => finish({ reached: true, status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.end(payload);
+  });
 }
 
 function unavailableBody(text) {
@@ -92,7 +130,7 @@ function unavailableBody(text) {
 export async function callLocal(tool, args, d) {
   let discovery = d;
   let attempt = await postOnce(tool, args, discovery);
-  if (attempt.reached && attempt.status === 401) {
+  if (attempt.reached && !attempt.error && attempt.status === 401) {
     const fresh = await readDiscovery();
     if (fresh) {
       discovery = fresh;
@@ -100,7 +138,9 @@ export async function callLocal(tool, args, d) {
     }
   }
   if (!attempt.reached) return { handled: false };
+  if (attempt.error) return { handled: true, error: attempt.error };
   if (attempt.status === 401) return { handled: false };
+  if (attempt.status >= 300 && attempt.status < 400) return { handled: true, error: "local_error: redirect not followed" };
   if (attempt.status === 503 || unavailableBody(attempt.text)) return { handled: false };
   let body;
   try { body = JSON.parse(attempt.text); } catch { body = null; }
@@ -108,7 +148,7 @@ export async function callLocal(tool, args, d) {
     const result = body.result?.structuredContent ?? body.result ?? body;
     return { handled: true, result };
   }
-  return { handled: true, error: body?.error?.message ?? `local endpoint returned HTTP ${attempt.status}` };
+  return { handled: true, error: body?.error?.message ?? `local_error: HTTP ${attempt.status}` };
 }
 
 function serverBase() {

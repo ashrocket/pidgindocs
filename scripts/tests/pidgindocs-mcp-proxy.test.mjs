@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -91,14 +91,7 @@ describe("falling back to the server", () => {
     assert.equal(server.calls.length, 1);
   });
 
-  it("no byte inside 700 ms: server called", async () => {
-    local.mode = "hang";
-    writeDiscovery();
-    const started = Date.now();
-    await callTool("pidgin_status", status);
-    assert.ok(Date.now() - started < 5000);
-    assert.equal(server.calls.length, 1);
-  });
+  // (moved: slow and silent endpoints are errors, never a fallback; see below)
 
   it("wrong token twice: server called", async () => {
     writeDiscovery({ token: "wrong-token-SECRET" });
@@ -121,7 +114,61 @@ describe("falling back to the server", () => {
   });
 });
 
-describe("never falling back after an accepted write", () => {
+describe("never falling back once the socket connected", () => {
+  afterEach(() => { delete process.env.PIDGINDOCS_LOCAL_TOTAL_TIMEOUT_MS; });
+
+  it("an endpoint that replies after 1.5 s is handled, with no server call", async () => {
+    local.mode = "slow";
+    writeDiscovery();
+    const r = await callTool("pidgin_status", status);
+    assert.equal(r.via, "local");
+    assert.equal(local.writes.length, 1);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("an endpoint that accepts and never replies ends in local_timeout, with no server call", async () => {
+    local.mode = "hang";
+    process.env.PIDGINDOCS_LOCAL_TOTAL_TIMEOUT_MS = "1200";
+    writeDiscovery();
+    await assert.rejects(callTool("pidgin_status", status), /local_timeout/);
+    assert.equal(local.calls.length, 1);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("a closed port is the only transport failure that falls back", async () => {
+    const port = local.port;
+    await local.close();
+    writeDiscovery({ port });
+    const r = await callTool("pidgin_status", status);
+    assert.equal(r.via, "server");
+    assert.equal(server.calls.length, 1);
+  });
+
+  it("a connection aborted after the headers is local_error, with no server call", async () => {
+    local.mode = "abort-after-headers";
+    writeDiscovery();
+    await assert.rejects(callTool("pidgin_status", status), /local_error/);
+    assert.equal(local.writes.length, 1);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("a redirect is never followed: local_error, and the target is not called", async () => {
+    local.mode = "redirect";
+    local.redirectTo = `${server.url}/api/messages`;
+    writeDiscovery();
+    await assert.rejects(callTool("pidgin_status", status), /local_error: redirect not followed/);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("a redirect to another loopback port is not followed either", async () => {
+    local.mode = "redirect";
+    local.redirectTo = "http://127.0.0.1:1/mcp";
+    writeDiscovery();
+    const r = await callLocal("pidgin_status", status, await readDiscovery());
+    assert.deepEqual(r, { handled: true, error: "local_error: redirect not followed" });
+  });
+
+
   it("error-after-write: server not called, error returned", async () => {
     local.mode = "error-after-write";
     writeDiscovery();
@@ -146,6 +193,38 @@ describe("discovery rules", () => {
     assert.equal(await readDiscovery(), null);
     await callTool("pidgin_status", status);
     assert.equal(local.calls.length, 0);
+  });
+
+  it("refuses a symlinked discovery file", async () => {
+    const real = writeDiscovery();
+    const link = path.join(dir, "link.json");
+    symlinkSync(real, link);
+    assert.equal(await readDiscovery([link]), null);
+    assert.ok(await readDiscovery([real]));
+  });
+
+  it("refuses a file owned by another user", async () => {
+    const real = writeDiscovery();
+    assert.ok(await readDiscovery([real], { uid: process.getuid() }));
+    assert.equal(await readDiscovery([real], { uid: process.getuid() + 1 }), null);
+  });
+
+  it("refuses group and other bits, including 0640, 0604 and 0700", async () => {
+    for (const mode of [0o640, 0o604, 0o700, 0o666]) {
+      writeDiscovery({}, mode);
+      assert.equal(await readDiscovery(), null, mode.toString(8));
+    }
+    writeDiscovery({}, 0o600);
+    assert.ok(await readDiscovery());
+  });
+
+  it("requires the host to be exactly 127.0.0.1", async () => {
+    for (const host of ["localhost", "0.0.0.0", "::1", "127.0.0.2", "example.com", "127.0.0.1 ", ""]) {
+      writeDiscovery({ host });
+      assert.equal(await readDiscovery(), null, JSON.stringify(host));
+    }
+    writeDiscovery({ host: "127.0.0.1" });
+    assert.ok(await readDiscovery());
   });
 
   it("ignores port 80 and ports below 1024 or above 65535", async () => {
