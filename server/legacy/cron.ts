@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { runWorkspaceBackup } from "./workspace-backup";
 import { sourceMarkdownKey } from "./documents";
+import { sweepBatchReceipts } from "./routes/batch";
 
 export async function runExpiry(env: Env): Promise<{ deleted: number }> {
   // Find all rows where expires_at has passed and they are not pinned.
@@ -103,6 +104,12 @@ export async function scheduled(
   try {
     const result = await runExpiry(env);
     console.log(`Expiry cron: deleted ${result.deleted} messages`);
+    try {
+      const batch = await sweepBatchReceipts(env);
+      console.log(`Batch sweep: abandoned ${batch.abandoned}, settled ${batch.settled}, deleted ${batch.deleted}`);
+    } catch (err) {
+      console.error("Batch sweep failed", err);
+    }
     const chat = await runChatExpiry(env);
     console.log(`Expiry cron: deleted ${chat.deleted} conversations`);
     const backup = await runWorkspaceBackup(env);

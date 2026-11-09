@@ -132,6 +132,7 @@ import {
   handlePrepareLibraryIndex,
   handleSuggestFiling,
 } from "./routes/library-search";
+import { handleBatch } from "./routes/batch";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -337,6 +338,9 @@ export default {
       }
       if (path === "/api/messages" && method === "GET") {
         return await handleGetMessages(request, env);
+      }
+      if (path === "/api/batch" && method === "POST") {
+        return await handleBatch(request, env, ctx);
       }
       if (path === "/api/messages/unread-count" && method === "GET") {
         const userId = await resolveCallerUserId(request, env);

@@ -49,6 +49,12 @@ Each hosted customer gets a separate deployment. Two customers never share a dep
 - Do not put hosting, billing, customer data or hosted-edition configuration in this repository.
 - Do not copy credentials, resource IDs or deployment configuration from a hosted edition into this repository.
 
+## Batch endpoint and usage hooks
+
+- `server/legacy/routes/batch.ts` serves `POST /api/batch`: up to 25 items (`message`, `status`, `document`, `artifact`, `comment`, `delete`) in one call, each through the function its single route uses. An `Idempotency-Key` header is required; receipts live in the `batch_receipts` table (`server/migrations/0002_batch_receipts.sql`) and the daily cron sweeps them.
+- `server/legacy/meter.ts` is an inert seam. With no hooks registered nothing happens. Something that wants usage limits calls `setMeterHooks` with `reserve` and `settle`. The batch handler and its cron sweep are the only callers. The core reports counts by kind in the `X-Pidgin-Units` header and never knows a limit, a weight or a price.
+- `validateMessagePayload` in `server/legacy/routes/messages.ts` holds the message field checks that `POST /api/messages` and the batch endpoint share.
+
 ## Features not in the code yet
 
 Slates, favorites and reply events are planned for the core. They are not in this repository yet. Do not rely on them.
