@@ -2,10 +2,13 @@ import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import net from "node:net";
+import os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEVICE_ARTIFACT_MAX_CHARS, startFake, TOOLS } from "./fake-local-endpoint.mjs";
+import { DEVICE_ARTIFACT_MAX_CHARS, startFake, startFakeServer, TOOLS } from "./fake-local-endpoint.mjs";
+import { callServer } from "../pidgindocs-mcp-proxy.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DOC = readFileSync(path.join(here, "..", "..", "docs", "local-endpoint.md"), "utf8");
@@ -79,11 +82,19 @@ describe("request checks", () => {
     assert.equal(r.status, 400);
   });
 
-  it("a body over 5 MB is 413", async () => {
+  it("a body over 5 MB is 413, a status and not a reset", async () => {
     fake = await startFake({ token: TOKEN });
     const big = rpc("pidgin_status", { title: "x".repeat(5 * 1024 * 1024 + 10) });
-    const r = await raw({ ...good(fake.port), body: big }).catch((e) => ({ status: e.code }));
-    assert.ok(r.status === 413 || r.status === "ECONNRESET" || r.status === "EPIPE", String(r.status));
+    const r = await raw({ ...good(fake.port), body: big });
+    assert.equal(r.status, 413);
+    assert.equal(fake.writes.length, 0);
+  });
+
+  it("a body just under 5 MB is accepted", async () => {
+    fake = await startFake({ token: TOKEN });
+    const pad = "x".repeat(5 * 1024 * 1024 - 1000);
+    const r = await raw({ ...good(fake.port), body: rpc("pidgin_status", { title: pad }) });
+    assert.equal(r.status, 200);
   });
 
   it("checks run in order: Host before Origin before token", async () => {
@@ -94,9 +105,31 @@ describe("request checks", () => {
     assert.equal(noToken.status, 401);
   });
 
-  it("the listener is bound to 127.0.0.1 only", async () => {
+  it("the listener is bound to 127.0.0.1 only: the real bound address, and no other interface answers", async (t) => {
     fake = await startFake({ token: TOKEN });
-    assert.equal(fake.address, "127.0.0.1");
+    const bound = fake.server.address();
+    assert.equal(bound.address, "127.0.0.1"); // fails for 0.0.0.0, :: or a LAN address
+    assert.equal(bound.port, fake.port);
+    const external = Object.values(os.networkInterfaces()).flat()
+      .find((i) => i && i.family === "IPv4" && !i.internal);
+    if (!external) { t.skip("no non-loopback IPv4 interface on this machine"); return; }
+    const outcome = await new Promise((resolve) => {
+      const socket = net.connect({ host: external.address, port: fake.port });
+      const timer = setTimeout(() => { socket.destroy(); resolve("timeout"); }, 1500);
+      socket.on("connect", () => { clearTimeout(timer); socket.destroy(); resolve("connected"); });
+      socket.on("error", (e) => { clearTimeout(timer); resolve(e.code); });
+    });
+    assert.equal(outcome, "ECONNREFUSED", `${external.address} must refuse`);
+  });
+
+  it("the bind check would catch a wildcard listener", async () => {
+    const wildcard = http.createServer();
+    await new Promise((r) => wildcard.listen(0, "0.0.0.0", r));
+    try {
+      assert.notEqual(wildcard.address().address, "127.0.0.1");
+    } finally {
+      await new Promise((r) => wildcard.close(r));
+    }
   });
 });
 
@@ -160,12 +193,13 @@ describe("routes", () => {
 });
 
 describe("discovery file", () => {
-  it("is written with mode 0600 and removed on close", async () => {
+  it("is written with mode 0600 in a 0700 directory, and removed on close", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "pidgindocs-contract-"));
-    const file = path.join(dir, "local-endpoint.json");
+    const file = path.join(dir, "nested", "local-endpoint.json");
     try {
       fake = await startFake({ token: TOKEN, discoveryPath: file });
       assert.equal(statSync(file).mode & 0o777, 0o600);
+      assert.equal(statSync(path.dirname(file)).mode & 0o777, 0o700);
       assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { port: fake.port, token: TOKEN, pid: process.pid, version: 1 });
       await fake.close();
       assert.equal(existsSync(file), false);
@@ -175,9 +209,78 @@ describe("discovery file", () => {
     }
   });
 
+  it("is created 0600 even under a permissive umask, with no chmod afterwards", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pidgindocs-contract-"));
+    const file = path.join(dir, "d", "local-endpoint.json");
+    const old = process.umask(0);
+    try {
+      fake = await startFake({ token: TOKEN, discoveryPath: file });
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+      assert.equal(statSync(path.dirname(file)).mode & 0o777, 0o700);
+    } finally {
+      process.umask(old);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const source = readFileSync(path.join(here, "fake-local-endpoint.mjs"), "utf8");
+    assert.ok(!/chmod/i.test(source.replace(/\/\/.*$/gm, "")), "the double must not chmod the discovery file");
+    assert.match(source, /flag: "wx"/);
+  });
+
   it("writes no file when no path is given", async () => {
     fake = await startFake({ token: TOKEN });
     assert.equal(fake.discoveryPath, null);
+  });
+});
+
+describe("tool table", () => {
+  const section = DOC.split("\n### Tool table")[1]?.split("\n## ")[0]?.split("\n### ")[0] ?? "";
+  const rows = [...section.matchAll(/^\| `(pidgin_[a-z_]+)` \| (local-only|both) \|/gm)].map((m) => ({ tool: m[1], where: m[2] }));
+
+  it("lists every tool exactly once, marked local-only or both", () => {
+    assert.deepEqual(rows.map((r) => r.tool).sort(), [...TOOLS].sort());
+  });
+
+  it("pidgin_sync_now is local-only and pidgin_publish_document is both", () => {
+    assert.equal(rows.find((r) => r.tool === "pidgin_sync_now")?.where, "local-only");
+    assert.equal(rows.find((r) => r.tool === "pidgin_publish_document")?.where, "both");
+  });
+
+  it("callServer agrees with the table: local-only tools refuse with local_only, the rest reach the server", async () => {
+    const server = await startFakeServer();
+    const saved = { url: process.env.PIDGINDOCS_URL, key: process.env.PIDGINDOCS_API_KEY };
+    process.env.PIDGINDOCS_URL = server.url;
+    process.env.PIDGINDOCS_API_KEY = "key-for-the-table-test";
+    try {
+      for (const { tool, where } of rows) {
+        const before = server.calls.length;
+        const args = { key: "abcdefgh", title: "t", markdown: "# m", html: "<p>h</p>", favicon: "📄" };
+        if (where === "local-only") {
+          await assert.rejects(callServer(tool, args), /local_only/, tool);
+          assert.equal(server.calls.length, before, `${tool} must not call the server`);
+        } else {
+          await callServer(tool, args);
+          assert.equal(server.calls.length, before + 1, `${tool} must call the server once`);
+        }
+      }
+    } finally {
+      process.env.PIDGINDOCS_URL = saved.url; process.env.PIDGINDOCS_API_KEY = saved.key;
+      if (saved.url === undefined) delete process.env.PIDGINDOCS_URL;
+      if (saved.key === undefined) delete process.env.PIDGINDOCS_API_KEY;
+      await server.close();
+    }
+  });
+});
+
+describe("rules the doc states for hosts", () => {
+  it("states the discovery permissions, the sync rules and the character rule", () => {
+    assert.match(DOC, /created with mode 0600 from the start/);
+    assert.match(DOC, /directory of mode 0700/);
+    assert.match(DOC, /never chmod/i);
+    assert.match(DOC, /per-item results/i);
+    assert.match(DOC, /at most 3 times/);
+    assert.match(DOC, /parked with an error/);
+    assert.match(DOC, /Unicode code points/);
+    assert.doesNotMatch(DOC, /enhance/i);
   });
 });
 
@@ -234,6 +337,26 @@ describe("pidgin_make_artifact length routing", () => {
     assert.equal(r.status, 200); // never a transport or JSON-RPC error
     assert.equal(r.json.error, undefined);
     assert.equal(fake.writes.length, 0);
+  });
+
+  it("counts Unicode code points: astral characters around the cutoff", async () => {
+    fake = await startFake({ token: TOKEN });
+    const emoji = "😀"; // one code point, two UTF-16 units, four UTF-8 bytes
+    const atLimit = emoji.repeat(12000);
+    assert.equal(atLimit.length, 24000);
+    assert.equal([...atLimit].length, 12000);
+    assert.equal((await make(fake.port, atLimit)).json.result.structuredContent.status, "ok");
+    const over = await make(fake.port, emoji.repeat(12001));
+    assert.deepEqual(over.json.result.structuredContent, { status: "unavailable", reason: "long" });
+    // A flag emoji is two code points, a family emoji is seven: code points, not grapheme clusters.
+    const flags = "🇸🇪".repeat(6000);
+    assert.equal([...flags].length, 12000);
+    assert.equal((await make(fake.port, flags)).json.result.structuredContent.status, "ok");
+    assert.equal((await make(fake.port, flags + "a")).json.result.structuredContent.reason, "long");
+    // One BMP character short of the limit with astral characters mixed in.
+    const mixed = "a".repeat(11998) + emoji;
+    assert.equal([...mixed].length, 11999);
+    assert.equal((await make(fake.port, mixed)).json.result.structuredContent.status, "ok");
   });
 
   it("counts characters, not bytes", async () => {

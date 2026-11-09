@@ -227,6 +227,16 @@ describe("discovery rules", () => {
     assert.ok(await readDiscovery());
   });
 
+  it("refuses a file in a directory with group or other bits", async () => {
+    const file = writeDiscovery();
+    spawnSync("chmod", ["755", dir]);
+    assert.equal(await readDiscovery([file]), null);
+    spawnSync("chmod", ["770", dir]);
+    assert.equal(await readDiscovery([file]), null);
+    spawnSync("chmod", ["700", dir]);
+    assert.ok(await readDiscovery([file]));
+  });
+
   it("ignores port 80 and ports below 1024 or above 65535", async () => {
     for (const port of [80, 1023, 65536, "8080", 0]) {
       writeDiscovery({ port });
@@ -316,6 +326,7 @@ describe("pidgin_make_artifact routing", () => {
     assert.equal(server.calls[0].method, "POST");
     assert.equal(server.calls[0].url, "/api/artifacts");
     assert.equal(server.calls[0].body.markdown, long.markdown);
+    assert.equal(server.calls[0].body.ai, true); // the long-document fallback asks the server's AI hook
     assert.equal("enhance" in server.calls[0].body, false);
   });
 
@@ -331,13 +342,49 @@ describe("pidgin_make_artifact routing", () => {
     });
   }
 
-  it("enhance is sent to the server only when the caller asked for it", async () => {
+  it("every fallback after unavailable asks for ai:true; enhance is never sent", async () => {
     local.behaviour = "artifact-model";
     writeDiscovery();
     await callTool("pidgin_make_artifact", { ...args, enhance: "polish" });
-    assert.equal(server.calls[0].body.enhance, "polish");
+    assert.equal(server.calls[0].body.ai, true);
+    assert.equal("enhance" in server.calls[0].body, false);
+  });
+
+  it("with no local endpoint at all, the plain call has no ai flag", async () => {
     await callTool("pidgin_make_artifact", args);
-    assert.equal("enhance" in server.calls[1].body, false);
+    assert.equal("ai" in server.calls[0].body, false);
+  });
+});
+
+describe("tools that need a decision on the server side", () => {
+  it("pidgin_publish_document falls back to POST /api/messages as a document", async () => {
+    await callServer("pidgin_publish_document", { title: "Doc", html: "<p>x</p>", project: "p" });
+    const c = server.calls[0];
+    assert.equal(c.method, "POST");
+    assert.equal(c.url, "/api/messages");
+    assert.equal(c.body.type, "document");
+    assert.equal(c.body.html, "<p>x</p>");
+    assert.equal(c.body.instance.session_id, "sess-test");
+  });
+
+  it("pidgin_sync_now is local-only: callServer refuses with local_only and calls nothing", async () => {
+    await assert.rejects(callServer("pidgin_sync_now", {}), /local_only/);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("pidgin_sync_now with no endpoint reports local_only to the caller", async () => {
+    await assert.rejects(callTool("pidgin_sync_now", {}), /local_only/);
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("pidgin_sync_now over stdio is an error result naming local_only", async () => {
+    const child = spawnSync(process.execPath, [PROXY], {
+      env: process.env,
+      input: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "pidgin_sync_now", arguments: {} } }) + "\n",
+    });
+    const reply = JSON.parse(String(child.stdout).trim());
+    assert.equal(reply.result.isError, true);
+    assert.match(reply.result.content[0].text, /local_only/);
   });
 });
 

@@ -8,7 +8,7 @@
 //
 // The local token goes only to http://127.0.0.1 and is never printed or logged.
 import { constants as fsConstants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import http from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -45,6 +45,10 @@ async function readOne(file, uid) {
     if (!info.isFile()) return null;
     if (uid !== undefined && info.uid !== uid) return null; // owned by this user only
     if ((info.mode & 0o777) !== 0o600) return null; // no group or other bits
+    // The directory must be the user's own and closed to group and other (0700).
+    const dirInfo = await stat(path.dirname(file));
+    if (uid !== undefined && dirInfo.uid !== uid) return null;
+    if ((dirInfo.mode & 0o077) !== 0) return null;
     const d = JSON.parse(await fh.readFile("utf8"));
     if (d.host !== undefined && d.host !== LOOPBACK) return null; // loopback only, exactly
     if (!Number.isInteger(d.port) || d.port < 1024 || d.port > 65535) return null;
@@ -141,7 +145,7 @@ export async function callLocal(tool, args, d) {
   if (attempt.error) return { handled: true, error: attempt.error };
   if (attempt.status === 401) return { handled: false };
   if (attempt.status >= 300 && attempt.status < 400) return { handled: true, error: "local_error: redirect not followed" };
-  if (attempt.status === 503 || unavailableBody(attempt.text)) return { handled: false };
+  if (attempt.status === 503 || unavailableBody(attempt.text)) return { handled: false, unavailable: true };
   let body;
   try { body = JSON.parse(attempt.text); } catch { body = null; }
   if (attempt.status >= 200 && attempt.status < 300 && body && !body.error) {
@@ -180,7 +184,9 @@ function sessionInstance(args) {
 }
 
 // The agent's own API key goes to the server; the local token never does.
-export async function callServer(tool, args = {}) {
+// opts.afterUnavailable: the local endpoint answered "unavailable", so ask the
+// deployment's AI hook (if it has one) to compose an artifact.
+export async function callServer(tool, args = {}, opts = {}) {
   switch (tool) {
     case "pidgin_draft_put": {
       const { key, ...body } = args;
@@ -206,12 +212,31 @@ export async function callServer(tool, args = {}) {
         description: args.description,
         favicon: args.favicon,
         label: args.label,
-        // Only when the caller asked; who pays for server AI is the server's call.
-        ...(args.enhance ? { enhance: args.enhance } : {}),
+        // After an "unavailable" the server may compose the page with the
+        // deployment's AI hook; with no hook it publishes the markdown plainly
+        // and the result says ai: "none". A call that never reached a local
+        // endpoint is a plain publish.
+        ...(opts.afterUnavailable ? { ai: true } : {}),
         team_id: args.team_id,
         project_id: args.project_id,
         instance: sessionInstance(args),
       });
+    case "pidgin_publish_document":
+      return serverRequest("POST", "/api/messages", {
+        type: "document",
+        title: args.title,
+        html: args.html,
+        markdown: args.markdown,
+        body: args.body,
+        doc_kind: args.doc_kind,
+        priority: args.priority,
+        team_id: args.team_id,
+        project_id: args.project_id,
+        instance: sessionInstance(args),
+      });
+    case "pidgin_sync_now":
+      // Syncs the host app's own queue. The server has no such queue.
+      throw new Error("local_only: pidgin_sync_now only exists on the local endpoint");
     default:
       throw new Error(`no server fallback for tool ${tool}`);
   }
@@ -229,14 +254,16 @@ export async function callTool(tool, args = {}) {
     if (local.error) throw new Error(local.error);
     return local.result;
   }
-  return callServer(tool, args);
+  return callServer(tool, args, { afterUnavailable: local.unavailable === true });
 }
 
 const TOOLS = [
   { name: "pidgin_draft_put", description: "Overwrite a draft.", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
   { name: "pidgin_draft_finish", description: "Commit a draft as one version.", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
   { name: "pidgin_status", description: "Post or update the living status item.", inputSchema: { type: "object", properties: { title: { type: "string" }, body: { type: "string" }, final: { type: "boolean" } }, required: ["title"] } },
+  { name: "pidgin_publish_document", description: "Publish a document.", inputSchema: { type: "object", properties: { title: { type: "string" }, html: { type: "string" }, markdown: { type: "string" } }, required: ["title"] } },
   { name: "pidgin_make_artifact", description: "Publish an artifact from markdown.", inputSchema: { type: "object", properties: { title: { type: "string" }, markdown: { type: "string" }, favicon: { type: "string" } }, required: ["markdown"] } },
+  { name: "pidgin_sync_now", description: "Sync the host app's queue now. Local endpoint only.", inputSchema: { type: "object", properties: {} } },
 ];
 
 async function handleRpc(msg) {

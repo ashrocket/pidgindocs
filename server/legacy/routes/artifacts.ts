@@ -1,3 +1,4 @@
+import { artifactAI } from "../artifact-ai";
 import type { Env } from "../types";
 import { json } from "../utils";
 import { resolveCallerUserId, unauthorized } from "../middleware";
@@ -44,6 +45,8 @@ interface PublishBody {
   capabilities?: Record<string, unknown> | null;
   design_system?: string | null;
   notify?: boolean;
+  // Ask the deployment's AI hook (if any) to compose markdown into a page.
+  ai?: boolean;
   instance?: { session_id?: string; project?: string };
   team_id?: string;
   project_id?: string;
@@ -68,11 +71,35 @@ export async function handlePublishArtifact(
   if (body.notify !== undefined && typeof body.notify !== "boolean") {
     return json({ ok: false, error: '"notify" must be a boolean' }, 400);
   }
+  if (body.ai !== undefined && typeof body.ai !== "boolean") {
+    return json({ ok: false, error: '"ai" must be a boolean' }, 400);
+  }
+
+  // ai:true on markdown input: "generated" with a hook that composed a page,
+  // "failed" when it returned nothing or threw (plain artifact), "none" with no hook.
+  let html = body.html;
+  let markdown = body.markdown;
+  let aiResult: "none" | "generated" | "failed" | undefined;
+  if (body.ai === true && typeof markdown === "string" && markdown.trim() && !html) {
+    const hook = artifactAI();
+    if (!hook) {
+      aiResult = "none";
+    } else {
+      try {
+        const composed = await hook.generate(env, userId, { markdown, title: body.title });
+        if (composed?.html) { html = composed.html; markdown = undefined; aiResult = "generated"; }
+        else aiResult = "failed";
+      } catch (err) {
+        console.error("artifact AI hook failed", err);
+        aiResult = "failed";
+      }
+    }
+  }
 
   try {
     const result = await publishArtifact(env, {
-      html: body.html,
-      markdown: body.markdown,
+      html,
+      markdown,
       title: body.title,
       description: body.description,
       favicon: body.favicon,
@@ -114,6 +141,7 @@ export async function handlePublishArtifact(
           title: result.artifact.title,
           created: result.created,
           artifact: serializeArtifact(env, result.artifact),
+          ...(aiResult ? { ai: aiResult } : {}),
         },
       },
       result.created ? 201 : 200

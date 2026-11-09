@@ -3,7 +3,7 @@
 // contract tests and the client tests both use this one double.
 import crypto from "node:crypto";
 import http from "node:http";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -35,7 +35,7 @@ const sameToken = (a, b) => crypto.timingSafeEqual(sha(a), sha(b)); // constant 
 export async function startFake({ token = "tok-local", behaviour = "ok", discoveryPath = null, delayMs = 1500 } = {}) {
   const state = {
     requests: [], writes: [], acceptTokens: [token], behaviour, delayMs, redirectTo: "",
-    port: 0, address: "127.0.0.1", discoveryPath, onUnauthorized: null,
+    port: 0, server: null, discoveryPath, onUnauthorized: null,
   };
   state.calls = state.requests; // the client tests' name for the same list
 
@@ -64,23 +64,16 @@ export async function startFake({ token = "tok-local", behaviour = "ok", discove
     if (!/^application\/json\s*(;|$)/i.test(req.headers["content-type"] ?? "")) { record(""); return send(400, { error: "content type must be application/json" }); }
 
     // 5. Body cap.
+    // Over the cap: keep reading and discard, then answer 413 once the body is
+    // drained, so the client gets a status and not a reset.
     let size = 0;
     const chunks = [];
-    let refused = false;
     req.on("data", (c) => {
-      if (refused) return;
       size += c.length;
-      if (size > MAX_BODY_BYTES) {
-        refused = true;
-        record("");
-        send(413, { error: "body too large" }, { Connection: "close" });
-        req.destroy();
-        return;
-      }
-      chunks.push(c);
+      if (size <= MAX_BODY_BYTES) chunks.push(c);
     });
     req.on("end", () => {
-      if (refused) return;
+      if (size > MAX_BODY_BYTES) { record(""); return send(413, { error: "body too large" }, { Connection: "close" }); }
       const raw = Buffer.concat(chunks).toString("utf8");
       record(raw);
       // 6. Not ready or signed out.
@@ -125,12 +118,16 @@ export async function startFake({ token = "tok-local", behaviour = "ok", discove
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  state.server = server; // tests read server.address() to see what is really bound
   state.port = server.address().port;
 
   if (discoveryPath) {
-    mkdirSync(path.dirname(discoveryPath), { recursive: true });
-    writeFileSync(discoveryPath, JSON.stringify({ port: state.port, token, pid: process.pid, version: 1 }), { mode: 0o600 });
-    chmodSync(discoveryPath, 0o600);
+    // The directory is created 0700 and the file is created 0600 from the
+    // start (flag "wx" with a mode). Never chmod afterwards: there is no window
+    // in which the token is readable by anyone else.
+    mkdirSync(path.dirname(discoveryPath), { recursive: true, mode: 0o700 });
+    rmSync(discoveryPath, { force: true });
+    writeFileSync(discoveryPath, JSON.stringify({ port: state.port, token, pid: process.pid, version: 1 }), { mode: 0o600, flag: "wx" });
   }
   state.close = () => new Promise((resolve) => {
     if (discoveryPath) rmSync(discoveryPath, { force: true });
