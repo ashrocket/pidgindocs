@@ -133,6 +133,7 @@ import {
   handleSuggestFiling,
 } from "./routes/library-search";
 import { handleBatch } from "./routes/batch";
+import { handleCommitDraft, handleDeleteDraft, handlePutDraft } from "./routes/drafts";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -338,6 +339,13 @@ export default {
       }
       if (path === "/api/messages" && method === "GET") {
         return await handleGetMessages(request, env);
+      }
+      const draftMatch = path.match(/^\/api\/drafts\/([A-Za-z0-9_-]{8,64})(\/commit)?$/);
+      if (draftMatch) {
+        const draftKey = draftMatch[1];
+        if (draftMatch[2] && method === "POST") return await handleCommitDraft(request, env, draftKey, ctx);
+        if (!draftMatch[2] && method === "PUT") return await handlePutDraft(request, env, draftKey);
+        if (!draftMatch[2] && method === "DELETE") return await handleDeleteDraft(request, env, draftKey);
       }
       if (path === "/api/batch" && method === "POST") {
         return await handleBatch(request, env, ctx);

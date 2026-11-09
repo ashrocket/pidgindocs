@@ -55,6 +55,7 @@ Each hosted customer gets a separate deployment. Two customers never share a dep
 - `server/legacy/meter.ts` is an inert seam. With no hooks registered nothing happens. Something that wants usage limits calls `setMeterHooks` with `reserve` and `settle`. The batch handler and its cron sweep are the only callers. The core reports counts by kind in the `X-Pidgin-Units` header and never knows a limit, a weight or a price.
 - `validateMessagePayload` in `server/legacy/routes/messages.ts` holds the message field checks that `POST /api/messages` and the batch endpoint share.
 - `foldStatus` in `server/legacy/messages/store.ts` keeps one living status row per stable session: a later `status` post updates it instead of inserting, until `final: true` closes it (`server/migrations/0003_status_closed.sql`). The generated MCP fallback session never folds.
+- `server/legacy/drafts.ts` keeps server-side drafts as R2 objects (`drafts/<user>/<key>.json`, no D1 row): `PUT|DELETE /api/drafts/:key` and `POST /api/drafts/:key/commit`. A five-minute cron trigger commits drafts idle for 10 minutes as their owner, reserving each with the meter hooks; the daily trigger drops drafts over 7 days old.
 
 ## Features not in the code yet
 

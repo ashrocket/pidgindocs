@@ -2,6 +2,7 @@ import { Env } from "./types";
 import { runWorkspaceBackup } from "./workspace-backup";
 import { sourceMarkdownKey } from "./documents";
 import { sweepBatchReceipts } from "./routes/batch";
+import { commitStaleDrafts, deleteOldDrafts, DRAFT_IDLE_MS } from "./drafts";
 
 export async function runExpiry(env: Env): Promise<{ deleted: number }> {
   // Find all rows where expires_at has passed and they are not pinned.
@@ -96,11 +97,29 @@ export async function runChatExpiry(env: Env): Promise<{ deleted: number }> {
   return { deleted: ids.length };
 }
 
+export const DRAFT_CRON = "*/5 * * * *";
+
 export async function scheduled(
-  _controller: ScheduledController,
+  controller: ScheduledController,
   env: Env,
   _ctx: ExecutionContext
 ): Promise<void> {
+  // The five-minute trigger only commits idle drafts; the daily one does the rest.
+  if (controller.cron === DRAFT_CRON) {
+    try {
+      const drafts = await commitStaleDrafts(env, DRAFT_IDLE_MS, controller.scheduledTime);
+      console.log(`Draft cron: committed ${drafts.committed}, failed ${drafts.failed}, skipped ${drafts.skipped}`);
+    } catch (err) {
+      console.error("Draft cron failed", err);
+    }
+    return;
+  }
+  try {
+    const dropped = await deleteOldDrafts(env, controller.scheduledTime);
+    if (dropped) console.log(`Draft cron: deleted ${dropped} drafts over 7 days old`);
+  } catch (err) {
+    console.error("Draft cleanup failed", err);
+  }
   try {
     const result = await runExpiry(env);
     console.log(`Expiry cron: deleted ${result.deleted} messages`);
