@@ -16,7 +16,7 @@ const CURSOR_KEY = "meta/draft-cursor.json";
 export const draftObjectKey = (userId: string, key: string) => `drafts/${userId}/${key}.json`;
 
 type Json = Record<string, any>;
-export interface DraftResult { status: number; body: Json }
+export interface DraftResult { status: number; body: Json; units?: string }
 
 // Overwrites one draft. Returns "limit" for a 51st new key.
 export async function putDraft(env: Env, userId: string, key: string, text: string): Promise<"ok" | "limit"> {
@@ -90,25 +90,102 @@ async function publishStored(env: Env, userId: string, stored: Json): Promise<Dr
   }
 }
 
-async function readDraft(env: Env, objectKey: string): Promise<Json | null> {
-  const object = await env.DOCS.get(objectKey);
-  if (!object) return null;
-  return JSON.parse(await object.text()) as Json;
+const BUCKET_MS = 6 * 60 * 60_000;
+
+// --- Claim-first commits (F's receipt table) -------------------------------
+// One receipt per (draft, idempotency key or draft etag). Whoever inserts it
+// publishes; everyone else reads the row. The etag key means two commits of
+// the same draft content, from a request and the cron, run once.
+
+interface Receipt { status: string; http_status: number | null; body: string | null }
+
+async function claimReceipt(
+  env: Env, userId: string, receiptKey: string, claimId: string
+): Promise<{ won: true } | { won: false; row: Receipt | null }> {
+  const res = await env.DB.prepare(
+    `INSERT INTO batch_receipts (owner, key, claim_id, status, created_at)
+     VALUES (?, ?, ?, 'pending', datetime('now')) ON CONFLICT DO NOTHING`
+  ).bind(userId, receiptKey, claimId).run();
+  if ((res.meta?.changes ?? 0) > 0) return { won: true };
+  const row = await env.DB.prepare(
+    "SELECT status, http_status, body FROM batch_receipts WHERE owner = ? AND key = ?"
+  ).bind(userId, receiptKey).first<Receipt>();
+  return { won: false, row };
 }
 
-// Publish the draft, then delete it. 404 when there is no draft. The draft
-// stays when the publish does not succeed.
+async function releaseReceipt(env: Env, userId: string, receiptKey: string, claimId: string): Promise<void> {
+  await env.DB.prepare(
+    "DELETE FROM batch_receipts WHERE owner = ? AND key = ? AND claim_id = ? AND status = 'pending'"
+  ).bind(userId, receiptKey, claimId).run();
+}
+
+// Fenced finish. settled=1 because nothing here is refunded by the batch sweep;
+// the cron settles its own reservation.
+async function finishReceipt(
+  env: Env, userId: string, receiptKey: string, claimId: string,
+  status: "done" | "abandoned", httpStatus: number, body: string
+): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE batch_receipts SET status = ?, settled = 1, http_status = ?, body = ?
+     WHERE owner = ? AND key = ? AND claim_id = ? AND status = 'pending'`
+  ).bind(status, httpStatus, body, userId, receiptKey, claimId).run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+// R2 has no conditional delete, so check the etag right before deleting: a
+// newer PUT that landed during the publish survives. A failure here is
+// harmless because the done receipt stops a re-publish of the same content.
+async function deleteIfEtag(env: Env, objectKey: string, etag: string): Promise<boolean> {
+  try {
+    const head = await env.DOCS.head(objectKey);
+    if (!head || head.etag !== etag) return false;
+    await env.DOCS.delete(objectKey);
+    return true;
+  } catch (err) {
+    console.error("draft delete failed; the receipt prevents a re-publish", err);
+    return false;
+  }
+}
+
+// Publish the draft, then delete it (if unchanged). 404 when there is no
+// draft. The draft stays when the publish does not succeed. The claim key is
+// the Idempotency-Key when given, else the draft's etag.
 export async function commitDraft(
-  env: Env, userId: string, key: string, _ctx?: ExecutionContext
+  env: Env, userId: string, key: string, _ctx?: ExecutionContext, idem?: string
 ): Promise<DraftResult> {
   const objectKey = draftObjectKey(userId, key);
-  let stored: Json | null;
-  try { stored = await readDraft(env, objectKey); }
-  catch { return failure(400, "draft is not valid JSON"); }
-  if (!stored) return failure(404, "draft not found");
-  const result = await publishStored(env, userId, stored);
-  if (result.status === 200) await env.DOCS.delete(objectKey);
-  return result;
+  const object = await env.DOCS.get(objectKey);
+  if (!object && !idem) return failure(404, "draft not found");
+  const etag = object?.etag;
+  const receiptKey = `draft-commit:${key}:${idem ?? etag}`;
+  const claimId = crypto.randomUUID();
+  const claim = await claimReceipt(env, userId, receiptKey, claimId);
+  if (!claim.won) {
+    const row = claim.row;
+    if (row?.status === "done") {
+      if (etag && !idem) await deleteIfEtag(env, objectKey, etag); // retry a delete that failed
+      return { status: row.http_status ?? 200, body: JSON.parse(row.body ?? "{}"), units: "none" };
+    }
+    return failure(409, row?.status === "pending" ? "commit_in_progress" : "commit_abandoned");
+  }
+  try {
+    if (!object || !etag) { await releaseReceipt(env, userId, receiptKey, claimId); return failure(404, "draft not found"); }
+    let stored: Json;
+    try { stored = JSON.parse(await object.text()) as Json; }
+    catch { await releaseReceipt(env, userId, receiptKey, claimId); return failure(400, "draft is not valid JSON"); }
+    const result = await publishStored(env, userId, stored);
+    if (result.status !== 200) {
+      await releaseReceipt(env, userId, receiptKey, claimId); // a retry may run again
+      return result;
+    }
+    const done = await finishReceipt(env, userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+    if (!done) return failure(409, "commit_abandoned");
+    await deleteIfEtag(env, objectKey, etag);
+    return { ...result, units: "draft_commit=1" };
+  } catch (err) {
+    await releaseReceipt(env, userId, receiptKey, claimId).catch(() => {});
+    throw err;
+  }
 }
 
 function parseObjectKey(objectKey: string): { userId: string; key: string } | null {
@@ -128,11 +205,61 @@ async function saveCursor(env: Env, cursor: string | undefined): Promise<void> {
   else await env.DOCS.delete(CURSOR_KEY);
 }
 
-// Cron: commit drafts idle for olderThanMs as their owner. There is no
-// request, so each commit is reserved with the meter, keyed by the draft and
-// its upload time: refused leaves the draft, a good publish keeps the
-// reservation, a failed one settles with nothing. 100 objects a run, resuming
-// from a stored cursor so a stuck draft cannot starve the ones behind it.
+// One idle draft, as its owner. Claim first (the same receipt a request would
+// take), then reserve with the meter. The reservation key carries a 6-hour
+// bucket so a transient failure (settled, so its key is a tombstone) is
+// retried in the next bucket. A permanent 4xx keeps an abandoned receipt, so
+// the draft is not retried until the next PUT changes its etag.
+async function commitIdleDraft(env: Env, objectKey: string, now: number): Promise<"committed" | "failed" | "skipped"> {
+  const who = parseObjectKey(objectKey);
+  if (!who) return "skipped";
+  const object = await env.DOCS.get(objectKey);
+  if (!object) return "skipped";
+  const etag = object.etag;
+  const receiptKey = `draft-commit:${who.key}:${etag}`;
+  const claimId = crypto.randomUUID();
+  const claim = await claimReceipt(env, who.userId, receiptKey, claimId);
+  if (!claim.won) {
+    // Already published (a delete failed): finish the delete, publish nothing.
+    if (claim.row?.status === "done") await deleteIfEtag(env, objectKey, etag);
+    return "skipped";
+  }
+  const rk = `draft:${who.userId}:${who.key}:${object.uploaded.getTime()}:${Math.floor(now / BUCKET_MS)}`;
+  const settleNothing = async () => {
+    try { await meter().settle(env, rk, {}); } catch (err) { console.error("draft settle failed", err); }
+  };
+  let reserved = false;
+  try {
+    const r = await meter().reserve(env, who.userId, { draft_commit: 1 }, rk);
+    if (!r.ok) { await releaseReceipt(env, who.userId, receiptKey, claimId); return "skipped"; }
+    reserved = true;
+    let result: DraftResult | null = null;
+    try {
+      result = await publishStored(env, who.userId, JSON.parse(await object.text()) as Json);
+    } catch (err) {
+      console.error("draft commit failed", err);
+    }
+    if (result?.status === 200) {
+      await finishReceipt(env, who.userId, receiptKey, claimId, "done", 200, JSON.stringify(result.body));
+      await deleteIfEtag(env, objectKey, etag);
+      return "committed";
+    }
+    if (result && result.status >= 400 && result.status < 500) {
+      await finishReceipt(env, who.userId, receiptKey, claimId, "abandoned", result.status, JSON.stringify(result.body));
+    } else {
+      await releaseReceipt(env, who.userId, receiptKey, claimId);
+    }
+    await settleNothing();
+    return "failed";
+  } catch (err) {
+    await releaseReceipt(env, who.userId, receiptKey, claimId).catch(() => {});
+    if (reserved) await settleNothing();
+    throw err;
+  }
+}
+
+// Cron: commit drafts idle for olderThanMs. 100 objects a run, resuming from a
+// stored cursor so a stuck draft cannot starve the ones behind it.
 export async function commitStaleDrafts(
   env: Env, olderThanMs: number, now: number = Date.now()
 ): Promise<{ committed: number; failed: number; skipped: number }> {
@@ -147,28 +274,8 @@ export async function commitStaleDrafts(
   }
   for (const object of listing.objects) {
     try {
-      const who = parseObjectKey(object.key);
-      if (!who || now - object.uploaded.getTime() < olderThanMs) { out.skipped++; continue; }
-      const rk = `draft:${who.userId}:${who.key}:${object.uploaded.getTime()}`;
-      const reserved = await meter().reserve(env, who.userId, { draft_commit: 1 }, rk);
-      if (!reserved.ok) { out.skipped++; continue; }
-      let result: DraftResult | null = null;
-      try {
-        const stored = await readDraft(env, object.key);
-        if (stored) {
-          result = await publishStored(env, who.userId, stored);
-          if (result.status === 200) await env.DOCS.delete(object.key);
-        }
-      } catch (err) {
-        console.error("draft commit failed", err);
-      }
-      if (result?.status === 200) {
-        out.committed++;
-      } else {
-        out.failed++;
-        try { await meter().settle(env, rk, {}); }
-        catch (err) { console.error("draft settle failed", err); }
-      }
+      if (now - object.uploaded.getTime() < olderThanMs) { out.skipped++; continue; }
+      out[await commitIdleDraft(env, object.key, now)]++;
     } catch (err) {
       console.error("draft sweep item failed", err);
       out.failed++;

@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import worker from "../index";
 import { sha256Hex } from "../auth-utils";
 import { scheduled } from "../cron";
-import { commitStaleDrafts } from "../drafts";
+import { commitDraft, commitStaleDrafts } from "../drafts";
 import { setMeterHooks } from "../meter";
 import { WORKSPACE_BACKUP_PREFIX } from "../workspace-backup";
 import type { Env } from "../types";
@@ -26,6 +26,19 @@ beforeAll(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); })
 afterEach(() => setMeterHooks({}));
 
 type Json = any;
+
+// An env whose R2 bucket runs the given overrides in place of the real call.
+function wrap(base: Env, overrides: Record<string, (real: any, ...args: any[]) => any>): Env {
+  const real = base.DOCS as any;
+  const DOCS = new Proxy(real, {
+    get(target, prop: string) {
+      if (overrides[prop]) return (...args: any[]) => overrides[prop](real, ...args);
+      const v = target[prop];
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+  return { ...base, DOCS } as Env;
+}
 const MIN = 60_000;
 const newKey = () => `k${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 
@@ -95,6 +108,90 @@ describe("drafts", () => {
     expect(again.status).toBe(200);
     expect(again.body).toEqual(ok[0].body);
     expect(await u.docs()).toBe(1);
+  });
+
+  it("two concurrent commits with no key publish once and charge once", async () => {
+    const u = await makeUser("b3");
+    const key = newKey();
+    await u.put(key, docDraft());
+    const [a, b] = await Promise.all([u.commit(key), u.commit(key)]);
+    expect(await u.docs()).toBe(1);
+    expect([a, b].filter((r) => r.units === "draft_commit=1")).toHaveLength(1);
+    for (const r of [a, b]) expect([200, 404, 409]).toContain(r.status);
+    expect(await u.exists(key)).toBe(false);
+  });
+
+  it("a newer PUT during the publish survives the commit", async () => {
+    const u = await makeUser("b4");
+    const key = newKey();
+    await u.put(key, docDraft({ html: "<p>old</p>" }));
+    let swapped = false;
+    const racy = wrap(env, {
+      get: async (real, k, ...a) => {
+        const object = await real.get(k, ...a);
+        if (!swapped && k === u.objectKey(key)) {
+          swapped = true;
+          await real.put(k, JSON.stringify(docDraft({ html: "<p>newer</p>" })));
+        }
+        return object;
+      },
+    });
+    const r = await commitDraft(racy, u.id, key);
+    expect(r.status).toBe(200);
+    expect(await u.docs()).toBe(1);
+    expect(await u.exists(key)).toBe(true);
+    expect(JSON.parse(await (await env.DOCS.get(u.objectKey(key)))!.text()).html).toBe("<p>newer</p>");
+    expect((await u.commit(key)).status).toBe(200); // the newer draft commits on its own
+    expect(await u.docs()).toBe(2);
+  });
+
+  it("a publish whose delete throws is not published again by a retry or the cron", async () => {
+    const u = await makeUser("b5");
+    const meter = installFakeMeter(10);
+    const key = newKey();
+    await u.put(key, docDraft());
+    const t = (await env.DOCS.head(u.objectKey(key)))!.uploaded.getTime();
+    const broken = wrap(env, { delete: (real, k, ...a) => { if (String(k).startsWith("drafts/")) throw new Error("R2 delete failed"); return real.delete(k, ...a); } });
+    const r = await commitDraft(broken, u.id, key);
+    expect(r.status).toBe(200);
+    expect(await u.docs()).toBe(1);
+    expect(await u.exists(key)).toBe(true);
+    await commitStaleDrafts(broken, 10 * MIN, t + 11 * MIN); // still cannot delete, must not publish
+    expect(await u.docs()).toBe(1);
+    expect(meter.reserveCalls).toHaveLength(0);
+    await commitStaleDrafts(env, 10 * MIN, t + 12 * MIN); // delete works now
+    expect(await u.docs()).toBe(1);
+    expect(meter.reserveCalls).toHaveLength(0);
+    expect(await u.exists(key)).toBe(false);
+  });
+
+  it("a second request with the same draft content replays the stored result and finishes the delete", async () => {
+    const u = await makeUser("b6");
+    const key = newKey();
+    await u.put(key, docDraft());
+    const broken = wrap(env, { delete: (real, k, ...a) => { if (String(k).startsWith("drafts/")) throw new Error("R2 delete failed"); return real.delete(k, ...a); } });
+    const first = await commitDraft(broken, u.id, key);
+    const again = await u.commit(key);
+    expect(again.status).toBe(200);
+    expect(again.units).toBe("none");
+    expect(again.body).toEqual(first.body);
+    expect(await u.docs()).toBe(1);
+    expect(await u.exists(key)).toBe(false);
+  });
+
+  it("the cron skips a draft whose claim a request already holds", async () => {
+    const u = await makeUser("b7");
+    const meter = installFakeMeter(10);
+    const key = newKey();
+    await u.put(key, docDraft());
+    const head = (await env.DOCS.head(u.objectKey(key)))!;
+    await env.DB.prepare(
+      "INSERT INTO batch_receipts (owner, key, claim_id, status) VALUES (?, ?, 'held', 'pending')"
+    ).bind(u.id, `draft-commit:${key}:${head.etag}`).run();
+    await commitStaleDrafts(env, 10 * MIN, head.uploaded.getTime() + 11 * MIN);
+    expect(meter.reserveCalls).toHaveLength(0);
+    expect(await u.docs()).toBe(0);
+    expect(await u.exists(key)).toBe(true);
   });
 
   it("a stale base_version is 409 and keeps the draft", async () => {
@@ -224,6 +321,43 @@ describe("draft cron", () => {
     await commitStaleDrafts(env, 10 * MIN, t + 16 * MIN);
     expect(meter.settleCalls).toHaveLength(1);
     expect(meter.remaining).toBe(10);
+    // Not retried in a later 6-hour bucket either: a permanent failure waits for the next PUT.
+    await commitStaleDrafts(env, 10 * MIN, t + 7 * 60 * MIN);
+    expect(meter.reserveCalls).toHaveLength(1);
+    expect(meter.settleCalls).toHaveLength(1);
+    await u.put(key, docDraft());
+    const t2 = await uploaded(u, key);
+    await commitStaleDrafts(env, 10 * MIN, t2 + 11 * MIN);
+    expect(await u.exists(key)).toBe(false);
+  });
+
+  it("a transient failure is retried in the next 6-hour bucket, not before", async () => {
+    const u = await makeUser("k2");
+    const meter = installFakeMeter(10);
+    const key = newKey();
+    await u.put(key, docDraft());
+    const t = await uploaded(u, key);
+    let failNext = true;
+    const flaky = wrap(env, {
+      put: (real, k, ...a) => {
+        if (failNext && String(k).startsWith("docs/")) { failNext = false; throw new Error("R2 hiccup"); }
+        return real.put(k, ...a);
+      },
+    });
+    const now1 = t + 11 * MIN;
+    await commitStaleDrafts(flaky, 10 * MIN, now1);
+    expect(await u.exists(key)).toBe(true);
+    expect(meter.settleCalls).toHaveLength(1);
+    expect(meter.settleCalls[0].actual).toEqual({});
+    expect(meter.remaining).toBe(10);
+    await commitStaleDrafts(flaky, 10 * MIN, now1 + 60_000); // same bucket: tombstoned, no retry
+    expect(await u.exists(key)).toBe(true);
+    expect(await u.docs()).toBe(0);
+    await commitStaleDrafts(flaky, 10 * MIN, now1 + 6 * 60 * MIN + 60_000);
+    expect(await u.exists(key)).toBe(false);
+    expect(await u.docs()).toBe(1);
+    expect(new Set(meter.reserveCalls).size).toBe(2); // the same-bucket retry reused the tombstoned key
+    expect(meter.remaining).toBe(9);
   });
 
   it("a throw on one draft does not stop the next", async () => {
