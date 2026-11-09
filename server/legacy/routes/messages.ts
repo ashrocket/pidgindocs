@@ -1,5 +1,6 @@
 import { Env, MessagePayload } from "../types";
 import { deferOrAwait, json } from "../utils";
+import { withUnits } from "../meter";
 import { resolveApiKeyUser, verifySession, unauthorized, resolveCallerUserId } from "../middleware";
 import { deliverToDestinations } from "../destinations";
 import { appendLibraryFilters, loadLibraryPlacements, type LibraryPlacement } from "../library";
@@ -13,7 +14,9 @@ import {
   storeSourceMarkdown,
 } from "../documents";
 import {
+  closeStatus,
   createMessage,
+  foldStatus,
   loadMessageBlocks,
   MessageBlockInputError,
   type SerializedMessageBlock,
@@ -218,6 +221,9 @@ export function validateMessagePayload(
   }
   // Interactive docs are finished HTML+JS apps; the typeset/enhancement
   // pipelines only produce static pages, so raw html is the only valid input.
+  if (payload.final !== undefined && typeof payload.final !== "boolean") {
+    return { error: '"final" must be a boolean' };
+  }
   const interactive = payload.interactive === true;
   if (interactive && !html) {
     return { error: '"interactive" requires raw html input' };
@@ -272,6 +278,23 @@ export async function handlePostMessage(
   if ("error" in validated) return json({ ok: false, error: validated.error }, 400);
   const { html, markdown, body, designSystemName, docKind, instructions, enhance, interactive } = validated.value;
   payload = validated.value.payload;
+
+  // Living status item: a status from a stable session updates its row.
+  if (payload.type === "status" && !payload.blocks?.length) {
+    const folded = await foldStatus(env, {
+      userId: authedUser.userId,
+      teamId: payload.team_id ?? null,
+      projectId: payload.project_id ?? null,
+      sessionId: payload.instance.session_id,
+      instanceProject: payload.instance.project,
+      title: payload.title,
+      body,
+      final: payload.final === true,
+    });
+    if (folded) {
+      return withUnits(json({ ok: true, data: { id: folded.id, type: "status", folded: true } }, 200), { fold: 1 });
+    }
+  }
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -418,7 +441,9 @@ export async function handlePostMessage(
 
   await deferOrAwait(ctx, destinationPromise);
 
-  return json({ ok: true, data: { id, type: payload.type } }, 201);
+  if (payload.type === "status" && payload.final === true) await closeStatus(env, id);
+  const response = json({ ok: true, data: { id, type: payload.type } }, 201);
+  return payload.type === "status" ? withUnits(response, { status: 1 }) : response;
 }
 
 export async function handleGetMessages(

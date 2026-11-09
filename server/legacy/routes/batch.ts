@@ -11,7 +11,7 @@ import {
   deleteArtifact,
   publishArtifact,
 } from "../artifacts/store";
-import { createMessage, MessageBlockInputError } from "../messages/store";
+import { closeStatus, createMessage, foldStatus, MessageBlockInputError } from "../messages/store";
 import { canWriteWorkspace, createComment, getWorkspaceMembership } from "../workspace";
 import { validateMessagePayload } from "./messages";
 import { formatUnits, meter, UNITS_HEADER, type UnitKind, type Units } from "../meter";
@@ -117,6 +117,19 @@ async function runItem(
         if ("error" in v) return fail(ref, "invalid", v.error);
         const payload = v.value.payload;
         if (payload.type !== item.kind) return fail(ref, "invalid", `a ${item.kind} item takes no html or markdown`);
+        if (payload.type === "status" && !payload.blocks?.length) {
+          const folded = await foldStatus(env, {
+            userId,
+            teamId: payload.team_id ?? null,
+            projectId: payload.project_id ?? null,
+            sessionId: payload.instance.session_id,
+            instanceProject: payload.instance.project,
+            title: payload.title,
+            body: v.value.body,
+            final: payload.final === true,
+          });
+          if (folded) return { ref, ok: true, id: folded.id, folded: true };
+        }
         const id = crypto.randomUUID();
         const createdAt = new Date().toISOString();
         const created = await createMessage(env, {
@@ -146,6 +159,7 @@ async function runItem(
         const envelope: MessageEnvelope = {
           id, payload: { ...payload, body: created.body ?? undefined }, docKey: null, createdAt,
         };
+        if (payload.type === "status" && payload.final === true) await closeStatus(env, id);
         await deferOrAwait(ctx, deliverToDestinations(env, envelope).catch((err) =>
           console.error("destination delivery failed", err)));
         return { ref, ok: true, id };
@@ -292,7 +306,7 @@ export async function handleBatch(
       const result = await runItem(env, ctx, owner, items[i] as Item, i);
       results.push(result);
       if (result.ok) {
-        const kind = (items[i] as Item).kind as UnitKind;
+        const kind = (result.folded ? "fold" : (items[i] as Item).kind) as UnitKind;
         succeeded[kind] = (succeeded[kind] ?? 0) + 1;
       }
     }

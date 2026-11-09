@@ -335,6 +335,61 @@ export async function createMessage(
   return { id, body, blocks };
 }
 
+export const STATUS_FOLD_WINDOW = "-4 hours";
+export const STATUS_MAX_LINES = 20;
+export const STATUS_MAX_BYTES = 4096;
+
+export interface FoldStatusInput {
+  userId: string;
+  teamId: string | null;
+  projectId: string | null;
+  sessionId: string;
+  instanceProject: string;
+  title: string;
+  body: string | null;
+  final?: boolean;
+}
+
+function foldedBody(newText: string, earlier: string | null): string {
+  const enc = new TextEncoder();
+  let lines = `${newText}\n${earlier ?? ""}`.split("\n").filter((l, i) => i === 0 || l.length > 0).slice(0, STATUS_MAX_LINES);
+  // Drop the oldest lines until it fits; a lone oversized line is cut.
+  while (lines.length > 1 && enc.encode(lines.join("\n")).byteLength > STATUS_MAX_BYTES) lines.pop();
+  let out = lines.join("\n");
+  while (enc.encode(out).byteLength > STATUS_MAX_BYTES) out = out.slice(0, Math.floor(out.length * 0.9));
+  return out;
+}
+
+// The living status item: update the caller's open status row for this
+// session instead of inserting. One UPDATE of unindexed columns: no audit row,
+// no push, no message_blocks. Two folds at once both succeed and the last write
+// wins the body (no lock; a status line is not worth one). Returns null when
+// there is nothing to fold into, and the caller inserts.
+export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id: string } | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, body FROM messages
+     WHERE user_id = ? AND team_id IS ? AND project_id IS ? AND instance_session_id = ?
+       AND instance_project = ? AND type = 'status' AND archived_at IS NULL
+       AND dismiss_action IS NULL AND status_closed_at IS NULL
+       AND created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`
+  )
+    .bind(input.userId, input.teamId ?? null, input.projectId ?? null, input.sessionId, input.instanceProject)
+    .first<{ id: string; body: string | null }>();
+  if (!row) return null;
+  const body = foldedBody(input.body ?? input.title, row.body);
+  const res = await env.DB.prepare(
+    `UPDATE messages SET title = ?, body = ?${input.final ? ", status_closed_at = datetime('now')" : ""}
+     WHERE id = ? AND status_closed_at IS NULL`
+  ).bind(input.title, body, row.id).run();
+  return (res.meta?.changes ?? 0) > 0 ? { id: row.id } : null;
+}
+
+// A final status closes its row so the next status starts a new one.
+export async function closeStatus(env: Env, id: string): Promise<void> {
+  await env.DB.prepare("UPDATE messages SET status_closed_at = datetime('now') WHERE id = ?").bind(id).run();
+}
+
 export async function loadMessageBlocks(
   env: Env,
   messageIds: string[]

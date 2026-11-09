@@ -54,6 +54,7 @@ Each hosted customer gets a separate deployment. Two customers never share a dep
 - `server/legacy/routes/batch.ts` serves `POST /api/batch`: up to 25 items (`message`, `status`, `document`, `artifact`, `comment`, `delete`) in one call, each through the function its single route uses. An `Idempotency-Key` header is required; receipts live in the `batch_receipts` table (`server/migrations/0002_batch_receipts.sql`) and the daily cron sweeps them.
 - `server/legacy/meter.ts` is an inert seam. With no hooks registered nothing happens. Something that wants usage limits calls `setMeterHooks` with `reserve` and `settle`. The batch handler and its cron sweep are the only callers. The core reports counts by kind in the `X-Pidgin-Units` header and never knows a limit, a weight or a price.
 - `validateMessagePayload` in `server/legacy/routes/messages.ts` holds the message field checks that `POST /api/messages` and the batch endpoint share.
+- `foldStatus` in `server/legacy/messages/store.ts` keeps one living status row per stable session: a later `status` post updates it instead of inserting, until `final: true` closes it (`server/migrations/0003_status_closed.sql`). The generated MCP fallback session never folds.
 
 ## Features not in the code yet
 

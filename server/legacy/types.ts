@@ -132,6 +132,8 @@ export interface MessagePayload {
   // Serve via /idoc/:id with scripts executable (strict no-network CSP, no
   // protection wrapper). Requires raw html input.
   interactive?: boolean;
+  // status only: fold once more, then close the living status item
+  final?: boolean;
   blocks?: MessageBlockInput[];
   instance: InstanceIdentity;
 }

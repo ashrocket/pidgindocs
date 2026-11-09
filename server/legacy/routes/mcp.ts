@@ -61,7 +61,7 @@ import {
   touchConversation,
 } from "../chat/store";
 import { fanOutChatMessage } from "../chat/fanout";
-import { createMessage, MessageBlockInputError } from "../messages/store";
+import { closeStatus, createMessage, foldStatus, MessageBlockInputError } from "../messages/store";
 import { deleteMessageForUser } from "./messages";
 import { resolveAgentCredential } from "../agent-board";
 import { AGENT_BOARD_TOOLS, callAgentBoardTool } from "./mcp-agent-board";
@@ -800,6 +800,7 @@ const TOOLS: McpTool[] = [
         source_url: { type: "string", format: "uri" },
         instance_id: { type: "string", description: "If provided, updates working_on for this registered instance atomically." },
         working_on: { type: "string", description: "Short description of what this instance is currently doing. Requires instance_id." },
+        final: { type: "boolean", description: "For type='status' with instance_id: fold this update into the open status item, then close it so the next status starts a new one." },
         blocks: {
           type: "array",
           minItems: 1,
@@ -2036,6 +2037,10 @@ async function callTool(
       const sourceUrl = optionalString(args, "source_url") || null;
       const instanceId = optionalString(args, "instance_id");
       const workingOn = optionalString(args, "working_on");
+      const final = optionalBoolean(args, "final") === true;
+      // Only a caller-supplied instance_id is a stable session; the generated
+      // mcp-<uuid> fallback below never folds.
+      const explicitSession = instanceId || null;
 
       if (instanceId && workingOn !== undefined) {
         // Scope the working_on update to the caller so one tenant can't write
@@ -2046,7 +2051,25 @@ async function callTool(
       }
 
       let created;
+      let folded: { id: string } | null = null;
       try {
+        if (msgType === "status" && explicitSession && !(Array.isArray(args.blocks) && args.blocks.length)) {
+          folded = await foldStatus(env, {
+            userId,
+            teamId: optionalString(args, "team_id") ?? null,
+            projectId: optionalString(args, "project_id") ?? null,
+            sessionId: explicitSession,
+            instanceProject: project,
+            title,
+            body,
+            final,
+          });
+        }
+        if (folded) {
+          return toolResult(`Updated status "${title}".`, {
+            message: { id: folded.id, type: msgType, title, priority, project, folded: true },
+          });
+        }
         created = await createMessage(
           env,
           {
@@ -2075,6 +2098,7 @@ async function callTool(
         }
         throw err;
       }
+      if (msgType === "status" && final) await closeStatus(env, created.id);
 
       return toolResult(
         `Sent ${msgType} "${title}" (${priority}).`,
