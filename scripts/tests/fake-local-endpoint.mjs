@@ -8,6 +8,11 @@ import path from "node:path";
 
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
+// PROPOSAL, not a decision: a document over this many characters is not
+// composed on the device. The owner confirms or changes it. It is named here
+// and stated once in docs/local-endpoint.md; a test keeps the two equal.
+export const DEVICE_ARTIFACT_MAX_CHARS = 12000;
+
 // The tools the contract names. A test checks this list against the doc.
 export const TOOLS = [
   "pidgin_draft_put",
@@ -25,6 +30,7 @@ const sameToken = (a, b) => crypto.timingSafeEqual(sha(a), sha(b)); // constant 
 //   ok | unavailable | error-after-write | slow (answers after delayMs)
 //   unavailable-status (200 with status:"unavailable") | hang | abort-after-headers
 //   redirect (302 to redirectTo)
+//   artifact-model | artifact-quality | artifact-timeout (pidgin_make_artifact only)
 // discoveryPath: write a 0600 discovery file there, removed by close().
 export async function startFake({ token = "tok-local", behaviour = "ok", discoveryPath = null, delayMs = 1500 } = {}) {
   const state = {
@@ -87,6 +93,16 @@ export async function startFake({ token = "tok-local", behaviour = "ok", discove
       if (rpc.method !== "tools/call" || !TOOLS.includes(tool)) return rpcError(-32601, "method not found");
 
       if (state.behaviour === "unavailable-status") return rpcResult({ status: "unavailable" });
+      if (tool === "pidgin_make_artifact") {
+        const args = rpc.params?.arguments ?? {};
+        const reason = /^artifact-(model|quality|timeout)$/.exec(state.behaviour)?.[1]
+          ?? ([...String(args.markdown ?? "")].length > DEVICE_ARTIFACT_MAX_CHARS ? "long" : null);
+        if (reason) return rpcResult({ status: "unavailable", reason }); // never an error
+        if (state.behaviour === "ok") {
+          state.writes.push({ tool, args }); // queued as an artifact item for the next batch
+          return rpcResult({ status: "ok", html: `<article><h1>${String(args.title ?? "")}</h1></article>`, generated_on: "device" });
+        }
+      }
       state.writes.push({ tool, args: rpc.params?.arguments });
       switch (state.behaviour) {
         case "hang": return; // accept the connection and the call, never answer

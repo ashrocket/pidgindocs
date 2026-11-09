@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { startFake, TOOLS } from "./fake-local-endpoint.mjs";
+import { DEVICE_ARTIFACT_MAX_CHARS, startFake, TOOLS } from "./fake-local-endpoint.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DOC = readFileSync(path.join(here, "..", "..", "docs", "local-endpoint.md"), "utf8");
@@ -207,5 +207,61 @@ describe("the doc and the double agree", () => {
     assert.match(DOC, /5 MB/);
     assert.match(DOC, /\{"status":"unavailable"\}/);
     assert.match(DOC, /-32601/);
+  });
+});
+
+describe("pidgin_make_artifact length routing", () => {
+  const make = (port, markdown, extra = {}) => raw({ ...good(port), body: rpc("pidgin_make_artifact", { title: "t", markdown, ...extra }) });
+
+  it("the cutoff is the named constant, 12,000, marked as a proposal", () => {
+    assert.equal(DEVICE_ARTIFACT_MAX_CHARS, 12000);
+  });
+
+  it("12,000 characters is made on the device and queued", async () => {
+    fake = await startFake({ token: TOKEN });
+    const r = await make(fake.port, "a".repeat(12000));
+    const out = r.json.result.structuredContent;
+    assert.equal(out.status, "ok");
+    assert.equal(out.generated_on, "device");
+    assert.equal(typeof out.html, "string");
+    assert.equal(fake.writes.length, 1);
+  });
+
+  it("12,001 characters is unavailable with reason long, and nothing is queued", async () => {
+    fake = await startFake({ token: TOKEN });
+    const r = await make(fake.port, "a".repeat(12001));
+    assert.deepEqual(r.json.result.structuredContent, { status: "unavailable", reason: "long" });
+    assert.equal(r.status, 200); // never a transport or JSON-RPC error
+    assert.equal(r.json.error, undefined);
+    assert.equal(fake.writes.length, 0);
+  });
+
+  it("counts characters, not bytes", async () => {
+    fake = await startFake({ token: TOKEN });
+    const r = await make(fake.port, "é".repeat(12000));
+    assert.equal(r.json.result.structuredContent.status, "ok");
+  });
+
+  for (const reason of ["model", "quality", "timeout"]) {
+    it(`any other failure answers unavailable with reason ${reason}, never an error`, async () => {
+      fake = await startFake({ token: TOKEN, behaviour: `artifact-${reason}` });
+      const r = await make(fake.port, "short");
+      assert.equal(r.status, 200);
+      assert.equal(r.json.error, undefined);
+      assert.deepEqual(r.json.result.structuredContent, { status: "unavailable", reason });
+      assert.equal(fake.writes.length, 0);
+    });
+  }
+
+  it("the doc states the same threshold as the double, as a proposal", () => {
+    const m = /over ([\d,]+) characters/.exec(DOC);
+    assert.ok(m, "the doc states a character threshold");
+    assert.equal(Number(m[1].replace(/,/g, "")), DEVICE_ARTIFACT_MAX_CHARS);
+    const rule = DOC.split("\n").find((l) => /over [\d,]+ characters/.test(l)) ?? "";
+    assert.match(DOC.slice(DOC.indexOf(rule) - 400, DOC.indexOf(rule) + 600), /proposal/i);
+  });
+
+  it("the doc lists the reasons the double returns", () => {
+    for (const reason of ["long", "model", "quality", "timeout"]) assert.match(DOC, new RegExp(`"${reason}"`));
   });
 });

@@ -44,6 +44,15 @@ Named and shaped like the server's tools, called with JSON-RPC `tools/call`:
 
 An unhandled tool is a JSON-RPC error with code `-32601`. A tool the host cannot serve right now answers `{"status":"unavailable"}` in its result, and the client uses the server for that call.
 
+### pidgin_make_artifact
+
+`pidgin_make_artifact { markdown, title }` makes a page from a document.
+
+1. A host that can make the page on the device answers `{ "status": "ok", "html": "...", "generated_on": "device" }` and queues the page as an `artifact` item for the next batch.
+2. Length routing, a proposal for the owner to confirm or change: a document over 12,000 characters is not composed on the device. The host answers `{ "status": "unavailable", "reason": "long" }`. Characters are counted, not bytes. The figure is one named constant, `DEVICE_ARTIFACT_MAX_CHARS`, in the test double; this line and the constant must agree.
+3. Any other failure (model missing, poor result, timeout) answers `{ "status": "unavailable", "reason": "model" }`, `"quality"` or `"timeout"`. The host never returns an error for these.
+4. On any `unavailable`, the client sends the call to the server as `POST /api/artifacts` with `markdown`, adding `enhance` only when the caller asked for it. Who pays for server AI is the server's decision, not the client's.
+
 ## Behaviour a host should have
 
 - Finalize a draft after 90 seconds idle, on `pidgin_draft_finish`, or at quit.

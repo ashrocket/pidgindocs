@@ -206,6 +206,8 @@ export async function callServer(tool, args = {}) {
         description: args.description,
         favicon: args.favicon,
         label: args.label,
+        // Only when the caller asked; who pays for server AI is the server's call.
+        ...(args.enhance ? { enhance: args.enhance } : {}),
         team_id: args.team_id,
         project_id: args.project_id,
         instance: sessionInstance(args),

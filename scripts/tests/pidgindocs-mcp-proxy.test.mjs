@@ -296,6 +296,51 @@ describe("server fallback maps", () => {
   });
 });
 
+describe("pidgin_make_artifact routing", () => {
+  const args = { title: "Doc", markdown: "# hi", favicon: "📄" };
+
+  it("a short document is made on the device: the server is not called", async () => {
+    writeDiscovery();
+    const r = await callTool("pidgin_make_artifact", args);
+    assert.equal(r.status, "ok");
+    assert.equal(r.generated_on, "device");
+    assert.equal(server.calls.length, 0);
+  });
+
+  it("a long document goes to the server once, as POST /api/artifacts with markdown", async () => {
+    writeDiscovery();
+    const long = { ...args, markdown: "a".repeat(12001) };
+    const r = await callTool("pidgin_make_artifact", long);
+    assert.equal(r.via, "server");
+    assert.equal(server.calls.length, 1);
+    assert.equal(server.calls[0].method, "POST");
+    assert.equal(server.calls[0].url, "/api/artifacts");
+    assert.equal(server.calls[0].body.markdown, long.markdown);
+    assert.equal("enhance" in server.calls[0].body, false);
+  });
+
+  for (const behaviour of ["artifact-model", "artifact-quality", "artifact-timeout"]) {
+    it(`${behaviour}: the client calls the server once`, async () => {
+      local.behaviour = behaviour;
+      writeDiscovery();
+      const r = await callTool("pidgin_make_artifact", args);
+      assert.equal(r.via, "server");
+      assert.equal(local.calls.length, 1);
+      assert.equal(server.calls.length, 1);
+      assert.equal(server.calls[0].url, "/api/artifacts");
+    });
+  }
+
+  it("enhance is sent to the server only when the caller asked for it", async () => {
+    local.behaviour = "artifact-model";
+    writeDiscovery();
+    await callTool("pidgin_make_artifact", { ...args, enhance: "polish" });
+    assert.equal(server.calls[0].body.enhance, "polish");
+    await callTool("pidgin_make_artifact", args);
+    assert.equal("enhance" in server.calls[1].body, false);
+  });
+});
+
 describe("stdio MCP server and CLI", () => {
   function run(args, input) {
     return new Promise((resolve) => {
