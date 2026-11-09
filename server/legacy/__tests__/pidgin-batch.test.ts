@@ -163,6 +163,14 @@ describe("POST /api/batch", () => {
     expect(await u.rows()).toBe(2);
   });
 
+  it("rejects a non-string team_id instead of skipping the membership check", async () => {
+    const u = await makeUser("i2");
+    const r = await u.batch([msg("1", { team_id: 5 }), msg("2", { team_id: { id: "x" } }), msg("3", { team_id: ["t"] }), msg("4")]);
+    expect(r.body.results.map((x: Json) => x.ok)).toEqual([false, false, false, true]);
+    expect(r.body.results[0].error).toEqual({ code: "invalid", message: "team_id must be a string" });
+    expect(await u.rows()).toBe(1);
+  });
+
   it("two concurrent batches with one key: one set of rows, one reserve", async () => {
     const u = await makeUser("j");
     const meter = installFakeMeter(100);

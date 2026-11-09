@@ -102,6 +102,9 @@ async function runItem(
   if (!item || typeof item !== "object" || !KINDS.has(item.kind)) {
     return fail(ref, "invalid", `"kind" must be one of ${[...KINDS].join(", ")}`);
   }
+  if (item.team_id !== undefined && item.team_id !== null && typeof item.team_id !== "string") {
+    return fail(ref, "invalid", "team_id must be a string");
+  }
   const teamId = typeof item.team_id === "string" && item.team_id ? item.team_id : null;
   if (teamId && !(await getWorkspaceMembership(env, teamId, userId))) {
     return fail(ref, "forbidden", "not a member of that team");
