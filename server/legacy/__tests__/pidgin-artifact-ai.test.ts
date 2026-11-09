@@ -241,9 +241,27 @@ describe("artifactAI is metered", () => {
     expect(r.body.data.ai).toBe("generated");
     expect(r.units).toBe("artifact=1;artifact_ai=1");
     expect(spy.calls).toBe(1);
-    expect(meter.reserveCalls).toEqual([`artifact-ai:${u.id}:idem-123`]);
-    expect(meter.settleCalls).toEqual([{ rk: `artifact-ai:${u.id}:idem-123`, actual: { artifact: 1, artifact_ai: 1 } }]);
+    expect(meter.reserveCalls).toHaveLength(1);
+    expect(meter.reserveCalls[0]).toMatch(new RegExp(`^artifact-ai:${u.id}:[0-9a-f-]{36}$`));
+    expect(meter.reserveCalls[0]).not.toContain("idem-123");
+    expect(meter.settleCalls).toEqual([{ rk: meter.reserveCalls[0], actual: { artifact: 1, artifact_ai: 1 } }]);
     expect(meter.remaining).toBe(10 - 2);
+  });
+
+  it("two concurrent requests with one Idempotency-Key make two reservations and two settles", async () => {
+    const u = await makeUser("m2c");
+    spyHook();
+    const meter = installFakeMeter(10);
+    const [a, b] = await Promise.all([
+      u.publish({ ...base, ai: true }, { "Idempotency-Key": "same-key" }),
+      u.publish({ ...base, ai: true }, { "Idempotency-Key": "same-key" }),
+    ]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(meter.reserveCalls).toHaveLength(2);
+    expect(new Set(meter.reserveCalls).size).toBe(2);
+    expect(meter.settleCalls).toHaveLength(2);
+    expect(new Set(meter.settleCalls.map((c) => c.rk)).size).toBe(2);
+    expect(await u.count()).toBe(2);
   });
 
   it("without an Idempotency-Key the reservation key is fresh each time", async () => {

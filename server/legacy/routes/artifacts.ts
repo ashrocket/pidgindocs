@@ -91,7 +91,9 @@ export async function handlePublishArtifact(
   let reserved = false;
   let settledOnce = false;
   let metered = false;
-  const rk = `artifact-ai:${userId}:${request.headers.get("Idempotency-Key")?.trim() || crypto.randomUUID()}`;
+  // Always fresh: this route does not replay stored responses, so a caller-supplied
+  // key must not decide reservations (a repeat would be refused or double-settled).
+  const rk = `artifact-ai:${userId}:${crypto.randomUUID()}`;
   const settleAI = async (actual: Units) => {
     if (!reserved || settledOnce) return;
     settledOnce = true;
