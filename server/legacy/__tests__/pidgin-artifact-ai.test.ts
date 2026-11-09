@@ -4,6 +4,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import worker from "../index";
 import { sha256Hex } from "../auth-utils";
 import { artifactAI, setArtifactAI } from "../artifact-ai";
+import { setMeterHooks } from "../meter";
+import { installFakeMeter } from "./fake-meter";
 import type { Env } from "../types";
 
 // The optional artifactAI() hook: a deployment may compose long documents
@@ -19,7 +21,7 @@ const env = {
 const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 beforeAll(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
-afterEach(() => setArtifactAI(null));
+afterEach(() => { setArtifactAI(null); setMeterHooks({}); });
 
 type Json = any;
 
@@ -29,13 +31,17 @@ async function makeUser(label: string) {
   await env.DB.prepare("INSERT INTO users (id, email, status) VALUES (?, ?, 'active')").bind(id, `${id}@example.com`).run();
   await env.DB.prepare("INSERT INTO api_keys (key_hash, key_prefix, user_id) VALUES (?, ?, ?)")
     .bind(await sha256Hex(token), "pidgin_sk", id).run();
-  const publish = async (body: unknown) => {
+  const publish = async (body: unknown, headers: Record<string, string> = {}, auth = true) => {
     const res = await worker.fetch(new Request("https://pidgindocs.example.workers.dev/api/artifacts", {
-      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "POST",
+      headers: { ...(auth ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
     }), env, ctx);
-    return { status: res.status, body: (await res.json()) as Json };
+    return { status: res.status, units: res.headers.get("X-Pidgin-Units"), body: (await res.json()) as Json };
   };
-  return { id, publish };
+  const count = async () =>
+    (await env.DB.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE user_id = ?").bind(id).first<{ n: number }>())!.n;
+  return { id, publish, count };
 }
 
 const base = { title: "Long doc", favicon: "📄", markdown: "# Heading\n\nSome long text." };
@@ -112,5 +118,198 @@ describe("artifactAI hook", () => {
   it("a non-boolean ai is 400", async () => {
     const u = await makeUser("g");
     expect((await u.publish({ ...base, ai: "yes" })).status).toBe(400);
+  });
+});
+
+// A hook that counts its calls, so a test can show it never ran.
+function spyHook(result: { html: string } | null | Error = { html: "<main>spy</main>" }) {
+  const spy = { calls: 0 };
+  setArtifactAI({
+    async generate() {
+      spy.calls++;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+  return spy;
+}
+
+describe("artifactAI validates before it spends", () => {
+  it("an unauthenticated request never reaches the hook or the meter", async () => {
+    const u = await makeUser("v0");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    expect((await u.publish({ ...base, ai: true }, {}, false)).status).toBe(401);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+  });
+
+  it("an oversized input never calls the hook or reserves", async () => {
+    const u = await makeUser("v1");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, markdown: "x".repeat(16 * 1024 * 1024 + 10), ai: true });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/maximum/);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+    expect(await u.count()).toBe(0);
+  });
+
+  it("a bad label never calls the hook or reserves", async () => {
+    const u = await makeUser("v2");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, label: "l".repeat(61), ai: true });
+    expect(r.status).toBe(400);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+  });
+
+  it("a missing favicon on create never calls the hook or reserves", async () => {
+    const u = await makeUser("v2b");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ title: "t", markdown: "# x", ai: true });
+    expect(r.status).toBe(400);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+  });
+
+  it("a stale base_version never calls the hook or reserves", async () => {
+    const u = await makeUser("v3");
+    const first = await u.publish(base);
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, artifact_id: first.body.data.id, base_version: 7, ai: true });
+    expect(r.status).toBe(409);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+  });
+
+  it("a team the caller is not in never calls the hook or reserves", async () => {
+    const u = await makeUser("v4");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, team_id: "team-not-mine", ai: true });
+    expect(r.status).toBe(403);
+    expect(spy.calls).toBe(0);
+    expect(meter.reserveCalls).toHaveLength(0);
+    expect((await u.publish({ ...base, team_id: 5, ai: true })).status).toBe(400);
+  });
+
+  it("an artifact that is not the caller's is not found, before the hook", async () => {
+    const u = await makeUser("v5");
+    const spy = spyHook();
+    installFakeMeter(10);
+    const r = await u.publish({ ...base, artifact_id: "nope", ai: true });
+    expect(r.status).toBe(404);
+    expect(spy.calls).toBe(0);
+  });
+
+  it("a hook's output over the cap is treated as failed and the plain artifact is published", async () => {
+    const u = await makeUser("v6");
+    spyHook({ html: "x".repeat(16 * 1024 * 1024 + 10) });
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, ai: true });
+    expect(r.status).toBe(201);
+    expect(r.body.data.ai).toBe("failed");
+    expect(meter.settleCalls[0].actual).toEqual({ artifact: 1, artifact_ai: 0 });
+  });
+});
+
+describe("artifactAI is metered", () => {
+  it("a refused reserve is 429 with remaining, and neither the hook nor the publish runs", async () => {
+    const u = await makeUser("m1");
+    const spy = spyHook();
+    const meter = installFakeMeter(10, { refuseNext: 1 });
+    const r = await u.publish({ ...base, ai: true });
+    expect(r.status).toBe(429);
+    expect(r.body.error).toBe("limit");
+    expect(r.body.remaining).toEqual({ message: 10 });
+    expect(spy.calls).toBe(0);
+    expect(await u.count()).toBe(0);
+    expect(meter.settleCalls).toHaveLength(0);
+  });
+
+  it("a good hook reserves both units, settles with both, and reports them", async () => {
+    const u = await makeUser("m2");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, ai: true }, { "Idempotency-Key": "idem-123" });
+    expect(r.status).toBe(201);
+    expect(r.body.data.ai).toBe("generated");
+    expect(r.units).toBe("artifact=1;artifact_ai=1");
+    expect(spy.calls).toBe(1);
+    expect(meter.reserveCalls).toEqual([`artifact-ai:${u.id}:idem-123`]);
+    expect(meter.settleCalls).toEqual([{ rk: `artifact-ai:${u.id}:idem-123`, actual: { artifact: 1, artifact_ai: 1 } }]);
+    expect(meter.remaining).toBe(10 - 2);
+  });
+
+  it("without an Idempotency-Key the reservation key is fresh each time", async () => {
+    const u = await makeUser("m2b");
+    spyHook();
+    const meter = installFakeMeter(10);
+    await u.publish({ ...base, ai: true });
+    await u.publish({ ...base, ai: true });
+    expect(new Set(meter.reserveCalls).size).toBe(2);
+    for (const rk of meter.reserveCalls) expect(rk).toMatch(new RegExp(`^artifact-ai:${u.id}:[0-9a-f-]{36}$`));
+  });
+
+  it("a failed hook settles artifact_ai as 0 and keeps artifact: 1", async () => {
+    const u = await makeUser("m3");
+    for (const outcome of [null, new Error("model down")] as const) {
+      const spy = spyHook(outcome);
+      const meter = installFakeMeter(10);
+      const r = await u.publish({ ...base, ai: true });
+      expect(r.status).toBe(201);
+      expect(r.body.data.ai).toBe("failed");
+      expect(r.units).toBe("artifact=1");
+      expect(spy.calls).toBe(1);
+      expect(meter.settleCalls).toHaveLength(1);
+      expect(meter.settleCalls[0].actual).toEqual({ artifact: 1, artifact_ai: 0 });
+      expect(meter.remaining).toBe(9);
+    }
+  });
+
+  it("a publish that fails after the hook settles artifact as 0 and artifact_ai as 1", async () => {
+    const u = await makeUser("m4");
+    const first = await u.publish(base);
+    const meter = installFakeMeter(10);
+    setArtifactAI({
+      async generate() {
+        // The target goes away while the hook runs, so the publish fails.
+        await env.DB.prepare("DELETE FROM artifact_versions WHERE artifact_id = ?").bind(first.body.data.id).run();
+        await env.DB.prepare("DELETE FROM artifacts WHERE id = ?").bind(first.body.data.id).run();
+        return { html: "<main>late</main>" };
+      },
+    });
+    const r = await u.publish({ ...base, artifact_id: first.body.data.id, ai: true });
+    expect(r.status).toBe(404);
+    expect(meter.settleCalls).toHaveLength(1);
+    expect(meter.settleCalls[0].actual).toEqual({ artifact: 0, artifact_ai: 1 });
+    expect(meter.remaining).toBe(9);
+  });
+
+  it("with no hook there is no artifact_ai reserve, matching singles", async () => {
+    const u = await makeUser("m5");
+    const meter = installFakeMeter(10);
+    const r = await u.publish({ ...base, ai: true });
+    expect(r.status).toBe(201);
+    expect(r.body.data.ai).toBe("none");
+    expect(r.units).toBeNull();
+    expect(meter.reserveCalls).toHaveLength(0);
+    expect(meter.settleCalls).toHaveLength(0);
+  });
+
+  it("without ai, even with a hook installed, nothing is reserved", async () => {
+    const u = await makeUser("m6");
+    const spy = spyHook();
+    const meter = installFakeMeter(10);
+    const r = await u.publish(base);
+    expect(r.status).toBe(201);
+    expect(spy.calls).toBe(0);
+    expect(r.units).toBeNull();
+    expect(meter.reserveCalls).toHaveLength(0);
   });
 });

@@ -1,4 +1,6 @@
 import { artifactAI } from "../artifact-ai";
+import { meter, withUnits, type Units } from "../meter";
+import { getWorkspaceMembership } from "../workspace";
 import type { Env } from "../types";
 import { json } from "../utils";
 import { resolveCallerUserId, unauthorized } from "../middleware";
@@ -15,6 +17,7 @@ import {
   listArtifacts,
   loadArtifactVersionContent,
   patchArtifact,
+  precheckArtifact,
   publishArtifact,
   serializeArtifact,
   serializeArtifactVersion,
@@ -23,6 +26,7 @@ import {
   verifyArtifactToken,
   type ArtifactRow,
 } from "../artifacts/store";
+import { MAX_ARTIFACT_BYTES } from "../artifacts/render";
 import { artifactCsp, designSystemStyleBlock, wrapArtifactHtml } from "../artifacts/render";
 import { getDesignSystem } from "../design-systems";
 import { compileDesignSystem } from "../documents/design-system";
@@ -75,19 +79,56 @@ export async function handlePublishArtifact(
     return json({ ok: false, error: '"ai" must be a boolean' }, 400);
   }
 
-  // ai:true on markdown input: "generated" with a hook that composed a page,
-  // "failed" when it returned nothing or threw (plain artifact), "none" with no hook.
+  // ai:true on markdown input. Every input check runs BEFORE the hook, so a
+  // request that would be refused never costs anything. With a hook the call
+  // is metered: reserve {artifact_ai, artifact}, run the hook, publish, then
+  // settle with what happened. "generated" = the hook composed a page,
+  // "failed" = it returned nothing, threw or answered too large (plain
+  // artifact), "none" = no hook (plain artifact, nothing reserved).
   let html = body.html;
   let markdown = body.markdown;
   let aiResult: "none" | "generated" | "failed" | undefined;
+  let reserved = false;
+  let settledOnce = false;
+  let metered = false;
+  const rk = `artifact-ai:${userId}:${request.headers.get("Idempotency-Key")?.trim() || crypto.randomUUID()}`;
+  const settleAI = async (actual: Units) => {
+    if (!reserved || settledOnce) return;
+    settledOnce = true;
+    try { await meter().settle(env, rk, actual); } catch (err) { console.error("artifact AI settle failed", err); }
+  };
   if (body.ai === true && typeof markdown === "string" && markdown.trim() && !html) {
     const hook = artifactAI();
     if (!hook) {
       aiResult = "none";
     } else {
+      metered = true;
+      try {
+        await precheckArtifact(env, {
+          markdown, title: body.title, favicon: body.favicon, label: body.label,
+          artifactId: body.artifact_id, sourcePath: body.source_path,
+          baseVersion: typeof body.base_version === "number" ? body.base_version : undefined,
+          force: body.force === true, visibility: body.visibility, role: body.role,
+          sessionId: body.instance?.session_id, userId,
+        });
+      } catch (err) {
+        return artifactErrorResponse(err);
+      }
+      if (body.team_id !== undefined && body.team_id !== null) {
+        if (typeof body.team_id !== "string") return json({ ok: false, error: '"team_id" must be a string' }, 400);
+        if (body.team_id && !(await getWorkspaceMembership(env, body.team_id, userId))) {
+          return json({ ok: false, error: "forbidden" }, 403);
+        }
+      }
+      const grant = await meter().reserve(env, userId, { artifact_ai: 1, artifact: 1 }, rk);
+      if (!grant.ok) {
+        return json({ ok: false, error: "limit", remaining: grant.remaining } as any, 429);
+      }
+      reserved = true;
       try {
         const composed = await hook.generate(env, userId, { markdown, title: body.title });
-        if (composed?.html) { html = composed.html; markdown = undefined; aiResult = "generated"; }
+        const size = composed?.html ? new TextEncoder().encode(composed.html).byteLength : 0;
+        if (composed?.html && size <= MAX_ARTIFACT_BYTES) { html = composed.html; markdown = undefined; aiResult = "generated"; }
         else aiResult = "failed";
       } catch (err) {
         console.error("artifact AI hook failed", err);
@@ -131,7 +172,9 @@ export async function handlePublishArtifact(
       else await push;
     }
 
-    return json(
+    const actual: Units = { artifact: 1, artifact_ai: aiResult === "generated" ? 1 : 0 };
+    await settleAI(actual);
+    const response = json(
       {
         ok: true,
         data: {
@@ -146,15 +189,22 @@ export async function handlePublishArtifact(
       },
       result.created ? 201 : 200
     );
+    return metered ? withUnits(response, actual) : response;
   } catch (err) {
-    if (err instanceof ArtifactConflictError) {
-      return json({ ok: false, error: err.message }, 409);
-    }
-    if (err instanceof ArtifactInputError) {
-      return json({ ok: false, error: err.message }, err.message === "artifact not found" ? 404 : 400);
-    }
-    throw err;
+    // The publish failed: nothing to charge for the artifact; the AI work, if it ran, was done.
+    await settleAI({ artifact: 0, artifact_ai: aiResult === "generated" ? 1 : 0 });
+    return artifactErrorResponse(err);
   }
+}
+
+function artifactErrorResponse(err: unknown): Response {
+  if (err instanceof ArtifactConflictError) {
+    return json({ ok: false, error: err.message }, 409);
+  }
+  if (err instanceof ArtifactInputError) {
+    return json({ ok: false, error: err.message }, err.message === "artifact not found" ? 404 : 400);
+  }
+  throw err;
 }
 
 // GET /api/artifacts?limit=&cursor=&q=&scope=

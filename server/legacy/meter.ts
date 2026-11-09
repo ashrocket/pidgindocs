@@ -2,14 +2,14 @@
 import type { Env } from "./types";
 
 export type UnitKind =
-  | "message" | "status" | "document" | "artifact" | "comment"
+  | "message" | "status" | "document" | "artifact" | "artifact_ai" | "comment"
   | "delete" | "fold" | "draft_put" | "draft_commit";
 export type Units = Partial<Record<UnitKind, number>>;
 
 export const UNITS_HEADER = "X-Pidgin-Units"; // "message=3;document=1"; "none" for a replay
 
 const UNIT_ORDER: UnitKind[] = [
-  "message", "status", "document", "artifact", "comment",
+  "message", "status", "document", "artifact", "artifact_ai", "comment",
   "delete", "fold", "draft_put", "draft_commit",
 ];
 
