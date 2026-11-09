@@ -61,7 +61,14 @@ import {
   touchConversation,
 } from "../chat/store";
 import { fanOutChatMessage } from "../chat/fanout";
-import { closeStatus, createMessage, foldStatus, MessageBlockInputError } from "../messages/store";
+import {
+  createMessage,
+  createOrFoldStatus,
+  MessageBlockInputError,
+  type CreateMessageInput,
+  type CreateMessageResult,
+} from "../messages/store";
+import { withUnits, type Units } from "../meter";
 import { deleteMessageForUser } from "./messages";
 import { resolveAgentCredential } from "../agent-board";
 import { AGENT_BOARD_TOOLS, callAgentBoardTool } from "./mcp-agent-board";
@@ -1030,6 +1037,15 @@ function toolResult(summary: string, structuredContent: unknown, isError = false
     structuredContent,
     isError,
   };
+}
+
+// Units a tool result reports; tools/call copies them to X-Pidgin-Units.
+const resultUnits = new WeakMap<object, Units>();
+
+function toolResultWithUnits(summary: string, structuredContent: unknown, units: Units): Record<string, unknown> {
+  const result = toolResult(summary, structuredContent);
+  resultUnits.set(result, units);
+  return result;
 }
 
 async function callTool(
@@ -2050,29 +2066,9 @@ async function callTool(
         ).bind(workingOn ?? null, instanceId, userId).run();
       }
 
-      let created;
-      let folded: { id: string } | null = null;
+      let created: CreateMessageResult & { folded?: boolean };
       try {
-        if (msgType === "status" && explicitSession && !(Array.isArray(args.blocks) && args.blocks.length)) {
-          folded = await foldStatus(env, {
-            userId,
-            teamId: optionalString(args, "team_id") ?? null,
-            projectId: optionalString(args, "project_id") ?? null,
-            sessionId: explicitSession,
-            instanceProject: project,
-            title,
-            body,
-            final,
-          });
-        }
-        if (folded) {
-          return toolResult(`Updated status "${title}".`, {
-            message: { id: folded.id, type: msgType, title, priority, project, folded: true },
-          });
-        }
-        created = await createMessage(
-          env,
-          {
+        const messageInput: CreateMessageInput = {
             type: msgType,
             title,
             body,
@@ -2089,18 +2085,32 @@ async function callTool(
           docKind: docKind || "doc",
           userId,
           blocks: args.blocks as MessageBlockInput[] | undefined,
-        },
-          ctx
-        );
+        };
+        created = explicitSession && msgType === "status" && !(Array.isArray(args.blocks) && args.blocks.length)
+          ? await createOrFoldStatus(env, messageInput, {
+              userId,
+              teamId: optionalString(args, "team_id") ?? null,
+              projectId: optionalString(args, "project_id") ?? null,
+              sessionId: explicitSession,
+              instanceProject: project,
+              title,
+              body,
+              final,
+            }, ctx)
+          : await createMessage(env, messageInput, ctx);
       } catch (err) {
         if (err instanceof MessageBlockInputError) {
           return toolResult("Invalid composed message.", { error: err.message }, true);
         }
         throw err;
       }
-      if (msgType === "status" && final) await closeStatus(env, created.id);
+      if (created.folded) {
+        return toolResultWithUnits(`Updated status "${title}".`, {
+          message: { id: created.id, type: msgType, title, priority, project, folded: true },
+        }, { fold: 1 });
+      }
 
-      return toolResult(
+      const sent = toolResult(
         `Sent ${msgType} "${title}" (${priority}).`,
         {
           message: {
@@ -2114,6 +2124,8 @@ async function callTool(
           },
         }
       );
+      if (msgType === "status") resultUnits.set(sent, { status: 1 });
+      return sent;
     }
 
     case "pidgin_list_design_systems": {
@@ -2498,7 +2510,8 @@ export async function handleMcp(
       }
       if (!authedUser) return jsonRpcError(id, { code: -32601, message: "Agent credentials can only use project board tools" });
       const result = await callTool(env, toolName, rawArguments, request.url, authedUser.userId, ctx);
-      return jsonRpcResult(id, result);
+      const units = resultUnits.get(result);
+      return units ? withUnits(jsonRpcResult(id, result), units) : jsonRpcResult(id, result);
     }
 
     default:

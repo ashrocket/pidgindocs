@@ -225,6 +225,51 @@ describe("status rollup", () => {
     expect(await u.rows()).toHaveLength(2);
   });
 
+  it("a plain status never folds into a row that has blocks", async () => {
+    const u = await makeUser("m");
+    const blocked = await u.post({ blocks: [{ type: "markdown", markdown: "hi" }] });
+    const plain = await u.post({ body: "plain" });
+    expect(plain.body.data.folded).toBeUndefined();
+    expect(plain.body.data.id).not.toBe(blocked.body.data.id);
+    const rows = await u.rows();
+    expect(rows).toHaveLength(2);
+    const blocks = await env.DB.prepare("SELECT message_id FROM message_blocks WHERE message_id IN (?, ?)")
+      .bind(blocked.body.data.id, plain.body.data.id).all<Json>();
+    expect(blocks.results.map((r) => r.message_id)).toEqual([blocked.body.data.id]);
+    const next = await u.post({ body: "again" });
+    expect(next.body.data.folded).toBe(true);
+    expect(next.body.data.id).toBe(plain.body.data.id);
+  });
+
+  it("two concurrent first statuses make one row: one insert, one fold", async () => {
+    const u = await makeUser("n");
+    const [a, b] = await Promise.all([u.post({ body: "a" }), u.post({ body: "b" })]);
+    expect([a.status, b.status].sort()).toEqual([200, 201]);
+    expect([a, b].filter((r) => r.body.data.folded === true)).toHaveLength(1);
+    expect(a.body.data.id).toBe(b.body.data.id);
+    expect([a.units, b.units].sort()).toEqual(["fold=1", "status=1"]);
+    const rows = await u.rows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].body.split("\n")).toHaveLength(2);
+    expect(await u.audit()).toBe(1);
+    expect(vi.mocked(sendPushNotification)).toHaveBeenCalledTimes(1);
+  });
+
+  it("MCP status calls set X-Pidgin-Units: status=1 on insert, fold=1 on fold, none for a message", async () => {
+    const u = await makeUser("o");
+    const first = await u.mcp("pidgin_send_message", { title: "x", type: "status", body: "a", instance_id: "inst-u" });
+    expect(first.units).toBe("status=1");
+    const second = await u.mcp("pidgin_send_message", { title: "y", type: "status", body: "b", instance_id: "inst-u" });
+    expect(second.units).toBe("fold=1");
+    expect(second.body.result.structuredContent.message.folded).toBe(true);
+    const noSession = await u.mcp("pidgin_send_message", { title: "z", type: "status", body: "c" });
+    expect(noSession.units).toBe("status=1");
+    const plain = await u.mcp("pidgin_send_message", { title: "m", body: "c" });
+    expect(plain.units).toBeNull();
+    const list = await u.call("/mcp", { jsonrpc: "2.0", id: 2, method: "tools/list" });
+    expect(list.units).toBeNull();
+  });
+
   it("batch status items fold per item and count fold units", async () => {
     const u = await makeUser("l");
     const instance = { model: "m", session_id: "sess-b", project: "p", source: "test" };

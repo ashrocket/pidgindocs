@@ -14,9 +14,11 @@ import {
   storeSourceMarkdown,
 } from "../documents";
 import {
-  closeStatus,
   createMessage,
-  foldStatus,
+  createOrFoldStatus,
+  type CreateMessageInput,
+  type CreateMessageResult,
+  type FoldStatusInput,
   loadMessageBlocks,
   MessageBlockInputError,
   type SerializedMessageBlock,
@@ -279,22 +281,20 @@ export async function handlePostMessage(
   const { html, markdown, body, designSystemName, docKind, instructions, enhance, interactive } = validated.value;
   payload = validated.value.payload;
 
-  // Living status item: a status from a stable session updates its row.
-  if (payload.type === "status" && !payload.blocks?.length) {
-    const folded = await foldStatus(env, {
-      userId: authedUser.userId,
-      teamId: payload.team_id ?? null,
-      projectId: payload.project_id ?? null,
-      sessionId: payload.instance.session_id,
-      instanceProject: payload.instance.project,
-      title: payload.title,
-      body,
-      final: payload.final === true,
-    });
-    if (folded) {
-      return withUnits(json({ ok: true, data: { id: folded.id, type: "status", folded: true } }, 200), { fold: 1 });
-    }
-  }
+  // Living status item: a status from a stable session updates its open row.
+  const statusFold: FoldStatusInput | null =
+    payload.type === "status" && !payload.blocks?.length
+      ? {
+          userId: authedUser.userId,
+          teamId: payload.team_id ?? null,
+          projectId: payload.project_id ?? null,
+          sessionId: payload.instance.session_id,
+          instanceProject: payload.instance.project,
+          title: payload.title,
+          body,
+          final: payload.final === true,
+        }
+      : null;
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -351,7 +351,7 @@ export async function handlePostMessage(
   const sourceSize = markdown ? new TextEncoder().encode(markdown).byteLength : 0;
   if (payload.type === "document" && docHtml) docKey = `docs/${id}.html`;
 
-  let created;
+  let created: CreateMessageResult & { folded?: boolean };
   try {
     if (docKey && docHtml) {
       await env.DOCS.put(docKey, docHtml, {
@@ -366,9 +366,7 @@ export async function handlePostMessage(
       await storeSourceMarkdown(env, id, markdown, payload.title);
     }
 
-    created = await createMessage(
-      env,
-      {
+    const messageInput: CreateMessageInput = {
         id,
         type: payload.type,
         title: payload.title,
@@ -391,9 +389,10 @@ export async function handlePostMessage(
         instance: payload.instance,
         userId: authedUser.userId,
         blocks: payload.blocks,
-      },
-      ctx
-    );
+      };
+    created = statusFold
+      ? await createOrFoldStatus(env, messageInput, statusFold, ctx)
+      : await createMessage(env, messageInput, ctx);
   } catch (err) {
     if (docKey) {
       await env.DOCS.delete(docKey).catch(() => {});
@@ -404,6 +403,10 @@ export async function handlePostMessage(
       return json({ ok: false, error: err.message }, 400);
     }
     throw err;
+  }
+
+  if (statusFold && "folded" in created && created.folded) {
+    return withUnits(json({ ok: true, data: { id: created.id, type: "status", folded: true } }, 200), { fold: 1 });
   }
 
   if (enhance && payload.type === "document") {
@@ -441,7 +444,6 @@ export async function handlePostMessage(
 
   await deferOrAwait(ctx, destinationPromise);
 
-  if (payload.type === "status" && payload.final === true) await closeStatus(env, id);
   const response = json({ ok: true, data: { id, type: payload.type } }, 201);
   return payload.type === "status" ? withUnits(response, { status: 1 }) : response;
 }

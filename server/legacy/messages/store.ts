@@ -226,12 +226,17 @@ export interface CreateMessageInput {
   instance: InstanceIdentity;
   userId: string;
   blocks?: MessageBlockInput[];
+  // status only: insert in one statement only if no open status row matches,
+  // else write nothing (see createOrFoldStatus)
+  onlyIfNoOpenStatus?: boolean;
 }
 
 export interface CreateMessageResult {
   id: string;
   body: string | null;
   blocks: PreparedMessageBlock[];
+  // true when onlyIfNoOpenStatus found an open row and nothing was written
+  skipped?: boolean;
 }
 
 export async function createMessage(
@@ -243,13 +248,17 @@ export async function createMessage(
   const id = input.id ?? crypto.randomUUID();
   const blocks = await prepareMessageBlocks(env, input.userId, input.blocks);
   const body = input.body ?? deriveMessageBody(blocks);
+  const conditional = input.onlyIfNoOpenStatus === true && input.type === "status" && blocks.length === 0;
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       `INSERT INTO messages (id, type, title, body, doc_key, priority, public,
         doc_slug, doc_version, is_latest, design_system, enhance_status, enhance_level,
         instance_model, instance_session_id, instance_project, instance_source, source_url, user_id,
         interactive, team_id, project_id, doc_kind, doc_size, source_size)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ${conditional
+         ? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (${OPEN_STATUS_MATCH})`
+         : "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"}`
     ).bind(
       id,
       input.type,
@@ -275,7 +284,10 @@ export async function createMessage(
       input.projectId ?? null,
       input.docKind ?? "doc",
       input.docSize ?? 0,
-      input.sourceSize ?? 0
+      input.sourceSize ?? 0,
+      ...(conditional
+        ? [input.userId, input.teamId ?? null, input.projectId ?? null, input.instance.session_id, input.instance.project]
+        : [])
     ),
   ];
 
@@ -306,17 +318,24 @@ export async function createMessage(
 
   statements.push(
     env.DB.prepare(
-      `INSERT INTO audit_log (action, instance_id, details, user_id)
-       VALUES (?, ?, ?, ?)`
+      conditional
+        ? `INSERT INTO audit_log (action, instance_id, details, user_id)
+           SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM messages WHERE id = ?)`
+        : `INSERT INTO audit_log (action, instance_id, details, user_id)
+           VALUES (?, ?, ?, ?)`
     ).bind(
       `post_${input.type}`,
       input.instance.session_id,
       `${input.instance.model} posted "${input.title}" from ${input.instance.project}`,
-      input.userId
+      input.userId,
+      ...(conditional ? [id] : [])
     )
   );
 
-  await env.DB.batch(statements);
+  const results = await env.DB.batch(statements);
+  if (conditional && (results[0]?.meta?.changes ?? 0) === 0) {
+    return { id, body, blocks, skipped: true };
+  }
 
   const pushBody =
     input.type === "question"
@@ -336,6 +355,15 @@ export async function createMessage(
 }
 
 export const STATUS_FOLD_WINDOW = "-4 hours";
+// The open status item for (user, team, project, session, instance project).
+// Binds, in order: user, team, project, session, instance project. Rows that
+// carry message_blocks never match, so a fold cannot leave stale blocks.
+const OPEN_STATUS_MATCH = `SELECT 1 FROM messages m
+  WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
+    AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
+    AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
+    AND m.created_at > datetime('now', '-4 hours')
+    AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)`;
 export const STATUS_MAX_LINES = 20;
 export const STATUS_MAX_BYTES = 4096;
 
@@ -367,12 +395,13 @@ function foldedBody(newText: string, earlier: string | null): string {
 // there is nothing to fold into, and the caller inserts.
 export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id: string } | null> {
   const row = await env.DB.prepare(
-    `SELECT id, body FROM messages
-     WHERE user_id = ? AND team_id IS ? AND project_id IS ? AND instance_session_id = ?
-       AND instance_project = ? AND type = 'status' AND archived_at IS NULL
-       AND dismiss_action IS NULL AND status_closed_at IS NULL
-       AND created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
-     ORDER BY created_at DESC, rowid DESC LIMIT 1`
+    `SELECT m.id, m.body FROM messages m
+     WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
+       AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
+       AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
+       AND m.created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
+       AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)
+     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`
   )
     .bind(input.userId, input.teamId ?? null, input.projectId ?? null, input.sessionId, input.instanceProject)
     .first<{ id: string; body: string | null }>();
@@ -383,6 +412,30 @@ export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id
      WHERE id = ? AND status_closed_at IS NULL`
   ).bind(input.title, body, row.id).run();
   return (res.meta?.changes ?? 0) > 0 ? { id: row.id } : null;
+}
+
+// Fold if an open status exists, else insert in one conditional statement so
+// two concurrent first statuses make one row; whoever's insert wrote nothing
+// folds instead. If the open row closed in that gap, plain insert.
+export async function createOrFoldStatus(
+  env: Env,
+  input: CreateMessageInput,
+  fold: FoldStatusInput,
+  ctx?: ExecutionContext
+): Promise<CreateMessageResult & { folded: boolean }> {
+  const done = (id: string) => ({ id, body: fold.body, blocks: [] as PreparedMessageBlock[], folded: true });
+  const first = await foldStatus(env, fold);
+  if (first) return done(first.id);
+  const created = await createMessage(env, { ...input, onlyIfNoOpenStatus: true }, ctx);
+  if (created.skipped) {
+    const again = await foldStatus(env, fold);
+    if (again) return done(again.id);
+    const plain = await createMessage(env, input, ctx);
+    if (fold.final) await closeStatus(env, plain.id);
+    return { ...plain, folded: false };
+  }
+  if (fold.final) await closeStatus(env, created.id);
+  return { ...created, folded: false };
 }
 
 // A final status closes its row so the next status starts a new one.
