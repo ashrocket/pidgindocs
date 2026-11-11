@@ -8,6 +8,9 @@ deploy the PidginDocs site or server to the live `pidgindocs.com` domain.
 the scope-check tests, static site check, server install, TypeScript check,
 server tests, and the pinned Gitleaks version against Git history and the
 working tree. On success, Pages publishes only a neutral validation receipt.
+The temporary `pidgindocs-ci-validation` Pages project in Ashley's personal
+Cloudflare account watches `codex/cloudflare-ci-20261111`; it has no custom
+domain and uses `.cloudflare-ci-output` as its output directory.
 
 The CodeQL workflow currently runs only when the GitHub repository is public.
 Before removing it, choose and verify an equivalent public-source security
