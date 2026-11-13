@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { getDesignSystem } from "../design-systems";
+import { canWriteContentScope } from "../content-scope";
 import { UNFILED, effectiveProjectSql, hasTagSql, type LibraryPlacement } from "../library";
 import {
   MAX_ARTIFACT_BYTES,
@@ -10,14 +11,17 @@ import {
 // Artifact identity + version store (Claude Code artifact parity). Unlike
 // documents — which are messages rows — artifacts have stable identity and N
 // immutable versions, so they get dedicated tables (migration 0019). Page
-// content lives in R2 at artifacts/{id}/v{n}.html (+ .md source for markdown
-// publishes).
+// content lives at immutable per-attempt R2 keys stored in artifact_versions
+// (+ .md source for markdown publishes). Legacy vN keys remain readable.
 
 export const ARTIFACT_VERSION_RETENTION = 20;
 export const MAX_LABEL_LENGTH = 60;
 
 // Invalid publish/patch input — handlers translate to 400 / MCP tool error.
 export class ArtifactInputError extends Error {}
+export class ArtifactForbiddenError extends ArtifactInputError {
+  constructor() { super("forbidden"); }
+}
 
 // Optimistic-concurrency failure — handlers translate to 409. Carries the
 // server's current version so the caller can reconcile and retry with force.
@@ -221,22 +225,27 @@ export async function listArtifactVersions(env: Env, id: string): Promise<Artifa
 }
 
 async function pruneVersions(env: Env, id: string, retention: number): Promise<void> {
-  const versions = await listArtifactVersions(env, id);
-  const pinnedRows = await env.DB.prepare(
-    "SELECT DISTINCT artifact_version FROM message_blocks WHERE artifact_id = ?"
-  )
-    .bind(id)
-    .all<{ artifact_version: number }>();
-  const pinned = new Set((pinnedRows.results ?? []).map((row) => row.artifact_version));
-  const stale = versions.slice(retention);
-  for (const v of stale) {
-    if (pinned.has(v.version)) continue;
-    await env.DOCS.delete(v.r2_key);
-    await env.DOCS.delete(sourceKeyFor(v.r2_key));
-    await env.DB.prepare("DELETE FROM artifact_versions WHERE artifact_id = ? AND version = ?")
-      .bind(id, v.version)
-      .run();
+  const stale = (await listArtifactVersions(env,id)).slice(retention);
+  for (const version of stale) {
+    const cleanupId = `prune-${crypto.randomUUID()}`;
+    // Pin checks and unlinking are one transaction. A pin added since the
+    // candidate list was read must keep its version and both R2 objects.
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO artifact_upload_attempts
+        (id,owner,artifact_id,version,r2_key,size_bytes,source_size,state,created_ms)
+        SELECT ?,a.user_id,v.artifact_id,v.version,v.r2_key,v.size,v.source_size,'retired',?
+        FROM artifact_versions v JOIN artifacts a ON a.id = v.artifact_id
+        WHERE v.artifact_id = ? AND v.version = ? AND v.r2_key = ?
+          AND a.current_version > v.version
+          AND (a.shared_version IS NULL OR a.shared_version != v.version)
+          AND NOT EXISTS(SELECT 1 FROM message_blocks b WHERE b.artifact_id = v.artifact_id AND b.artifact_version = v.version)`)
+        .bind(cleanupId,Date.now(),id,version.version,version.r2_key),
+      env.DB.prepare(`DELETE FROM artifact_versions WHERE artifact_id = ? AND version = ? AND r2_key = ?
+        AND EXISTS(SELECT 1 FROM artifact_upload_attempts WHERE id = ? AND state = 'retired')`)
+        .bind(id,version.version,version.r2_key,cleanupId),
+    ]);
   }
+  await flushArtifactUploadCleanup(env).catch(() => {});
 }
 
 // Shared by publish and patch: undefined carries the existing value forward,
@@ -263,10 +272,14 @@ async function resolveDesignSystemInput(
   return name;
 }
 
-export async function publishArtifact(
+// Every input check publishArtifact makes before it writes, without writing:
+// identity, label, visibility, role, version conflict, favicon, and the byte
+// cap on the input. Callers that do costly work first (the artifact AI hook)
+// run this before that work. Returns what publishArtifact needs.
+export async function precheckArtifact(
   env: Env,
   input: PublishArtifactInput
-): Promise<PublishArtifactResult> {
+): Promise<{ existing: ArtifactRow | null; favicon: string; hasHtml: boolean; hasMarkdown: boolean }> {
   if (!input.userId) throw new ArtifactInputError("authenticated user required");
   const hasHtml = typeof input.html === "string" && input.html.trim().length > 0;
   const hasMarkdown = typeof input.markdown === "string" && input.markdown.trim().length > 0;
@@ -295,6 +308,13 @@ export async function publishArtifact(
     existing = await findArtifactBySourcePath(env, input.userId, input.sourcePath, input.sessionId);
   }
 
+  // Updating by id or source path must retain authority over the old scope,
+  // as well as the resulting scope. Omitting team_id must not bypass it.
+  if ((existing && !await canWriteContentScope(env, input.userId, existing.team_id, existing.project_id)) ||
+      !await canWriteContentScope(env, input.userId, input.teamId ?? existing?.team_id, input.projectId ?? existing?.project_id)) {
+    throw new ArtifactForbiddenError();
+  }
+
   // Optimistic concurrency: a publish that started from a stale version 409s
   // unless the caller reconciled and passed force.
   if (
@@ -311,6 +331,55 @@ export async function publishArtifact(
     throw new ArtifactInputError('"favicon" is required (1-2 emoji) when creating an artifact');
   }
   validateFavicon(favicon);
+  const inputBytes = new TextEncoder().encode((hasMarkdown ? input.markdown : input.html) as string).byteLength;
+  if (inputBytes > MAX_ARTIFACT_BYTES) {
+    throw new ArtifactInputError(
+      `input is ${inputBytes} bytes — the maximum is ${MAX_ARTIFACT_BYTES} (16 MiB)`
+    );
+  }
+  return { existing, favicon, hasHtml, hasMarkdown };
+}
+
+
+
+// Repeat scope authority inside the activation transaction, after uploads.
+// Membership can be revoked while R2 is accepting a body.
+function artifactWriteGuard(userId: string, oldTeam: string | null, oldProject: string | null, team: string | null, project: string | null) {
+  const clauses = ["EXISTS(SELECT 1 FROM users WHERE id = ? AND status = 'active')"];
+  const binds: (string | number | null)[] = [userId];
+  for (const [scopeTeam,scopeProject] of [[oldTeam,oldProject],[team,project]]) {
+    if (scopeTeam) {
+      clauses.push("EXISTS(SELECT 1 FROM team_memberships WHERE team_id = ? AND user_id = ? AND role IN ('owner','admin','member'))");
+      binds.push(scopeTeam,userId);
+    }
+    if (scopeProject) {
+      clauses.push("EXISTS(SELECT 1 FROM projects WHERE id = ? AND team_id = ?)");
+      binds.push(scopeProject,scopeTeam);
+    }
+  }
+  return {sql:clauses.join(" AND "),binds};
+}
+
+export async function flushArtifactUploadCleanup(env: Env): Promise<number> {
+  const rows = await env.DB.prepare(`SELECT id,r2_key FROM artifact_upload_attempts u
+    WHERE state = 'retired' AND NOT EXISTS(SELECT 1 FROM artifact_versions v WHERE v.r2_key = u.r2_key)
+    ORDER BY created_ms LIMIT 100`).all<{id:string;r2_key:string}>();
+  let removed = 0;
+  for (const row of rows.results) {
+    try {
+      await env.DOCS.delete(row.r2_key);
+      await env.DOCS.delete(sourceKeyFor(row.r2_key));
+      removed += (await env.DB.prepare("DELETE FROM artifact_upload_attempts WHERE id = ? AND state = 'retired'").bind(row.id).run()).meta.changes;
+    } catch { console.error("artifact upload cleanup deferred"); }
+  }
+  return removed;
+}
+
+export async function publishArtifact(
+  env: Env,
+  input: PublishArtifactInput
+): Promise<PublishArtifactResult> {
+  const { existing, favicon, hasHtml, hasMarkdown } = await precheckArtifact(env, input);
 
   const sourceKind: "html" | "markdown" = hasMarkdown ? "markdown" : "html";
   const content = hasMarkdown
@@ -357,7 +426,17 @@ export async function publishArtifact(
 
   const id = existing?.id ?? crypto.randomUUID();
   const version = existing ? existing.current_version + 1 : 1;
-  const r2Key = artifactVersionKey(id, version);
+  const uploadId = crypto.randomUUID();
+  const r2Key = `artifacts/${id}/v${version}-${uploadId}.html`;
+  const teamId = input.teamId ?? existing?.team_id ?? null;
+  const projectId = input.projectId ?? existing?.project_id ?? null;
+  const scopeGuard = artifactWriteGuard(input.userId, existing?.team_id ?? null, existing?.project_id ?? null, teamId, projectId);
+  // This record survives a lost upload/activation response. A successful
+  // transaction replaces it with the version row; no guessed cleanup is safe.
+  await env.DB.prepare(`INSERT INTO artifact_upload_attempts
+    (id,owner,artifact_id,version,r2_key,size_bytes,source_size,state,created_ms)
+    VALUES (?,?,?,?,?,?,?,'staging',?)`)
+    .bind(uploadId,input.userId,id,version,r2Key,size,sourceSize,Date.now()).run();
 
   const retention = ARTIFACT_VERSION_RETENTION;
 
@@ -374,14 +453,21 @@ export async function publishArtifact(
     }
 
     const statements: D1PreparedStatement[] = [];
+    const versionInsert = (guard: string, binds: (string | number | null)[]) => env.DB.prepare(
+      `INSERT INTO artifact_versions (artifact_id,version,label,r2_key,size,created_by_session,source_size)
+       SELECT ?,?,?,?,?,?,? WHERE ${guard}`
+    ).bind(id,version,input.label?.trim() || null,r2Key,size,input.sessionId ?? null,sourceSize,...binds);
     if (existing) {
+      statements.push(versionInsert(`EXISTS(SELECT 1 FROM artifacts WHERE id = ? AND user_id = ? AND current_version = ? AND team_id IS ? AND project_id IS ?) AND ${scopeGuard.sql}`,
+        [id,input.userId,existing.current_version,existing.team_id,existing.project_id,...scopeGuard.binds]));
       statements.push(env.DB.prepare(
       `UPDATE artifacts SET title = ?, description = COALESCE(?, description), favicon = ?,
         source_path = COALESCE(?, source_path), source_kind = ?, role = ?, visibility = ?, capabilities = ?,
         design_system = ?, current_version = ?, instance_session_id = COALESCE(?, instance_session_id),
         instance_project = COALESCE(?, instance_project), team_id = COALESCE(?, team_id),
         project_id = COALESCE(?, project_id), updated_at = datetime('now')
-       WHERE id = ?`
+       WHERE id = ? AND current_version = ?
+         AND EXISTS(SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ? AND r2_key = ?)`
       ).bind(
         title,
         input.description ?? null,
@@ -397,7 +483,7 @@ export async function publishArtifact(
         input.project ?? null,
         input.teamId ?? null,
         input.projectId ?? null,
-        id
+        id, existing.current_version, id, version, r2Key
       ));
     } else {
       statements.push(
@@ -405,7 +491,7 @@ export async function publishArtifact(
           `INSERT INTO artifacts (id, user_id, title, description, favicon, source_path, source_kind,
             role, visibility, shared_version, current_version, capabilities, design_system, instance_session_id,
             instance_project, team_id, project_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ? WHERE ${scopeGuard.sql}`
         ).bind(
           id,
           input.userId,
@@ -422,36 +508,41 @@ export async function publishArtifact(
           input.sessionId ?? null,
           input.project ?? null,
           input.teamId ?? null,
-          input.projectId ?? null
+          input.projectId ?? null,
+          ...scopeGuard.binds
         )
       );
     }
 
+    if (!existing) statements.push(versionInsert(
+      "EXISTS(SELECT 1 FROM artifacts WHERE id = ? AND user_id = ? AND current_version = ?)", [id,input.userId,version]));
     statements.push(env.DB.prepare(
-      `INSERT INTO artifact_versions (
-         artifact_id, version, label, r2_key, size, created_by_session, source_size
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id,
-      version,
-      input.label?.trim() || null,
-      r2Key,
-      size,
-      input.sessionId ?? null,
-      sourceSize
-    ));
-    statements.push(env.DB.prepare(
-      `INSERT INTO audit_log (action, instance_id, details, user_id) VALUES (?, ?, ?, ?)`
+      `INSERT INTO audit_log (action, instance_id, details, user_id)
+       SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ? AND r2_key = ?)`
     ).bind(
       existing ? "update_artifact" : "publish_artifact",
       input.sessionId ?? "artifact",
       `${existing ? "Updated" : "Published"} artifact "${title}" v${version}`,
-      input.userId
+      input.userId, id, version, r2Key
     ));
-    await env.DB.batch(statements);
+    statements.push(env.DB.prepare(`DELETE FROM artifact_upload_attempts WHERE id = ?
+      AND EXISTS(SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ? AND r2_key = ?)`)
+      .bind(uploadId,id,version,r2Key));
+    const results = await env.DB.batch(statements);
+    if (!results[existing ? 0 : 1].meta.changes) {
+      // A completed zero-row insert proves this upload was never published.
+      // Its unique key cannot belong to another writer. Only these rows are
+      // eligible for automatic cleanup; uncertain attempts stay staged.
+      await env.DB.prepare("UPDATE artifact_upload_attempts SET state = 'retired' WHERE id = ?").bind(uploadId).run();
+      await flushArtifactUploadCleanup(env).catch(() => {});
+      if ((existing && !await canWriteContentScope(env,input.userId,existing.team_id,existing.project_id)) ||
+          !await canWriteContentScope(env,input.userId,teamId,projectId)) throw new ArtifactForbiddenError();
+      throw new ArtifactConflictError((await getArtifactById(env,id))?.current_version ?? 0);
+    }
   } catch (error) {
-    await env.DOCS.delete(r2Key).catch(() => {});
-    await env.DOCS.delete(sourceKeyFor(r2Key)).catch(() => {});
+    // R2 may finish after a rejected response, and D1 may have committed
+    // before its response was lost. Preserve both the bytes and their durable
+    // attempt/version metadata instead of deleting a possibly active upload.
     throw error;
   }
 
@@ -573,15 +664,19 @@ export async function patchArtifact(
 ): Promise<ArtifactRow | null> {
   const row = await getArtifactById(env, id);
   if (!row || row.user_id !== userId) return null;
+  if (!await canWriteContentScope(env,userId,row.team_id,row.project_id)) throw new ArtifactForbiddenError();
 
   const visibility = patch.visibility ?? row.visibility;
   if (visibility === "public" && row.capabilities) {
     throw new ArtifactInputError("artifacts that declare capabilities cannot be public");
   }
   const sharedVersion = patch.sharedVersion === undefined ? row.shared_version : patch.sharedVersion;
-  if (sharedVersion !== null && (sharedVersion < 1 || sharedVersion > row.current_version)) {
+  if (sharedVersion !== null && (!Number.isInteger(sharedVersion) || sharedVersion < 1 || sharedVersion > row.current_version)) {
     throw new ArtifactInputError(`"shared_version" must be between 1 and ${row.current_version}, or null for latest`);
   }
+  if (sharedVersion !== null && !await env.DB.prepare(
+    "SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ?"
+  ).bind(id,sharedVersion).first()) throw new ArtifactInputError("artifact version not found");
   const designSystem = await resolveDesignSystemInput(
     env,
     userId,
@@ -589,9 +684,12 @@ export async function patchArtifact(
     row.design_system ?? null
   );
 
-  await env.DB.prepare(
+  const scopeGuard = artifactWriteGuard(userId,row.team_id,row.project_id,row.team_id,row.project_id);
+  const updated = await env.DB.prepare(
     `UPDATE artifacts SET title = ?, description = ?, visibility = ?, shared_version = ?,
-      design_system = ?, updated_at = datetime('now') WHERE id = ?`
+      design_system = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?
+      AND current_version = ? AND team_id IS ? AND project_id IS ? AND ${scopeGuard.sql}
+      AND (? IS NULL OR EXISTS(SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ?))`
   )
     .bind(
       patch.title?.trim() || row.title,
@@ -599,9 +697,10 @@ export async function patchArtifact(
       visibility,
       sharedVersion,
       designSystem,
-      id
+      id,userId,row.current_version,row.team_id,row.project_id,...scopeGuard.binds,sharedVersion,id,sharedVersion
     )
     .run();
+  if (!updated.meta.changes) throw new ArtifactForbiddenError();
 
   return getArtifactById(env, id);
 }
@@ -609,20 +708,31 @@ export async function patchArtifact(
 export async function deleteArtifact(env: Env, id: string, userId: string): Promise<boolean> {
   const row = await getArtifactById(env, id);
   if (!row || row.user_id !== userId) return false;
+  if (!await canWriteContentScope(env,userId,row.team_id,row.project_id)) return false;
 
-  const versions = await listArtifactVersions(env, id);
-  for (const v of versions) {
-    await env.DOCS.delete(v.r2_key);
-    await env.DOCS.delete(sourceKeyFor(v.r2_key));
-  }
-  await env.DB.prepare("DELETE FROM artifact_versions WHERE artifact_id = ?").bind(id).run();
-  await env.DB.prepare("DELETE FROM artifact_storage WHERE artifact_id = ?").bind(id).run();
-  await env.DB.prepare("DELETE FROM artifacts WHERE id = ?").bind(id).run();
-  await env.DB.prepare(
-    `INSERT INTO audit_log (action, instance_id, details, user_id) VALUES (?, ?, ?, ?)`
-  )
-    .bind("delete_artifact", "artifact", `Deleted artifact "${row.title}"`, userId)
-    .run();
+  const scope = artifactWriteGuard(userId,row.team_id,row.project_id,row.team_id,row.project_id);
+  const guard = `EXISTS(SELECT 1 FROM artifacts WHERE id = ? AND user_id = ?
+    AND current_version = ? AND team_id IS ? AND project_id IS ? AND ${scope.sql})`;
+  const binds = [id,userId,row.current_version,row.team_id,row.project_id,...scope.binds];
+  // Detach only the version/scope we authorized, and preserve a durable cleanup
+  // row for every object in the same transaction. A failed/lost R2 deletion
+  // cannot erase our only record of retained bytes; an uncertain D1 response
+  // never triggers speculative object deletion.
+  const results = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO artifact_upload_attempts
+      (id,owner,artifact_id,version,r2_key,size_bytes,source_size,state,created_ms)
+      SELECT ? || version,?,artifact_id,version,r2_key,size,source_size,'retired',?
+      FROM artifact_versions WHERE artifact_id = ? AND ${guard}`)
+      .bind(`delete-${crypto.randomUUID()}:`,userId,Date.now(),id,...binds),
+    env.DB.prepare(`DELETE FROM artifact_versions WHERE artifact_id = ? AND ${guard}`).bind(id,...binds),
+    env.DB.prepare(`DELETE FROM artifact_storage WHERE artifact_id = ? AND ${guard}`).bind(id,...binds),
+    env.DB.prepare(`INSERT INTO audit_log(action,instance_id,details,user_id)
+      SELECT 'delete_artifact','artifact',?,? WHERE ${guard}`)
+      .bind(`Deleted artifact "${row.title}"`,userId,...binds),
+    env.DB.prepare(`DELETE FROM artifacts WHERE id = ? AND ${guard}`).bind(id,...binds),
+  ]);
+  if (!results[4].meta.changes) return false;
+  await flushArtifactUploadCleanup(env).catch(() => {});
   return true;
 }
 
@@ -631,7 +741,10 @@ export async function loadArtifactVersionContent(
   id: string,
   version: number
 ): Promise<string | null> {
-  const obj = await env.DOCS.get(artifactVersionKey(id, version));
+  const row = await env.DB.prepare("SELECT r2_key FROM artifact_versions WHERE artifact_id = ? AND version = ?")
+    .bind(id,version).first<{r2_key:string}>();
+  if (!row) return null;
+  const obj = await env.DOCS.get(row.r2_key);
   return obj ? obj.text() : null;
 }
 

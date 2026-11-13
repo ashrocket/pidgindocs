@@ -7,7 +7,6 @@ import {
   type LibraryResourceType,
 } from "../library";
 import { sourceMarkdownKey } from "../documents";
-import { artifactVersionKey } from "../artifacts/store";
 import { INDEX_VERSION, buildIndex, flatten, htmlToText, type IndexNode, type ParsedItem } from "./indexing";
 
 // Persistence for the library search index (migration 0038). D1 keeps the
@@ -77,11 +76,11 @@ export async function listLibraryItems(env: Env, userId: string): Promise<Librar
        FROM messages m WHERE ${VISIBLE_DOCUMENTS}`
     ).bind(userId).all<{ id: string; key: string; title: string; body: string | null; doc_key: string | null; created_at: string; signature: string; project_id: string }>(),
     env.DB.prepare(
-      `SELECT a.id, a.title, a.description, a.current_version, a.created_at,
+      `SELECT a.id, a.title, a.description, a.current_version, a.created_at, v.r2_key,
          'v' || a.current_version AS signature,
          ${effectiveProjectSql("artifact", "a")} AS project_id
-       FROM artifacts a WHERE ${VISIBLE_ARTIFACTS}`
-    ).bind(userId).all<{ id: string; title: string; description: string | null; current_version: number; created_at: string; signature: string; project_id: string }>(),
+       FROM artifacts a JOIN artifact_versions v ON v.artifact_id = a.id AND v.version = a.current_version WHERE ${VISIBLE_ARTIFACTS}`
+    ).bind(userId).all<{ id: string; title: string; description: string | null; current_version: number; created_at: string; signature: string; project_id: string; r2_key: string }>(),
   ]);
   const items: LibraryItem[] = [];
   for (const row of docs.results ?? []) {
@@ -103,7 +102,7 @@ export async function listLibraryItems(env: Env, userId: string): Promise<Librar
     });
   }
   for (const row of artifacts.results ?? []) {
-    const html = artifactVersionKey(row.id, row.current_version);
+    const html = row.r2_key;
     items.push({
       type: "artifact",
       id: row.id,

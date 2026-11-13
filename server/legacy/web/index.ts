@@ -1,7 +1,6 @@
 import type { CommuteBriefingListItem } from "../commute/store";
 import type { SetupStatus } from "../setup/status";
 import type { Env } from "../types";
-import { sha256Hex, encodeOAuthWebState } from "../auth-utils";
 import { compileDesignSystem } from "../documents/design-system";
 import { BUILTIN_DESIGN_SYSTEMS } from "../documents/styles";
 import { theme } from "./theme";
@@ -151,110 +150,7 @@ export function walkTopicPage(): Response {
   );
 }
 
-export async function loginPage(env: Env, error?: string, next?: string): Promise<Response> {
-  const origin = env.WORKER_URL || "";
-  // Raw nonce shared by both web SSO buttons — hashed for the provider (replay
-  // hardening, same convention as the native app's Sign in with Apple button),
-  // raw value threaded back to the server via the redirect target so
-  // verifyProviderIdToken can re-derive and compare the hash.
-  const rawNonce = crypto.randomUUID();
-  const nonceHash = await sha256Hex(rawNonce);
-
-  // Google's login_uri must byte-for-byte match a registered "Authorized
-  // redirect URI" (no query string was registered), so next/nonce can't ride
-  // on the URL the way Apple's state does on its POST body. Instead they're
-  // stashed in a short-lived cookie the browser resends on Google's cross-site
-  // POST back to this same path (hence SameSite=None, not Lax — Lax cookies
-  // are withheld on cross-site POSTs).
-  const googleButton = env.GOOGLE_WEB_CLIENT_ID
-    ? `<script src="https://accounts.google.com/gsi/client" async defer></script>
-  <div id="g_id_onload"
-    data-client_id="${esc(env.GOOGLE_WEB_CLIENT_ID)}"
-    data-ux_mode="redirect"
-    data-login_uri="${esc(origin)}/auth/oauth/google/web"
-    data-nonce="${nonceHash}"></div>
-  <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="signin_with" data-shape="rectangular" data-logo_alignment="left" style="margin-bottom:.6rem"></div>`
-    : "";
-  const googleStateCookie = env.GOOGLE_WEB_CLIENT_ID
-    ? `pidgin_g_oauth=${encodeOAuthWebState({ next, nonce: rawNonce })}; Path=/auth/oauth/google/web; HttpOnly; Secure; SameSite=None; Max-Age=600`
-    : undefined;
-
-  const appleButton = env.APPLE_WEB_SERVICE_ID
-    ? `<script type="text/javascript" src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js"></script>
-  <div id="appleid-signin" data-color="black" data-border="true" data-type="sign-in" data-width="375" data-height="44" style="width:375px;height:44px;margin-bottom:.6rem"></div>
-  <script>
-    AppleID.auth.init({
-      clientId: ${JSON.stringify(env.APPLE_WEB_SERVICE_ID)},
-      scope: "email",
-      redirectURI: ${JSON.stringify(origin + "/auth/oauth/apple/web")},
-      state: ${JSON.stringify(encodeOAuthWebState({ next, nonce: rawNonce }))},
-      nonce: ${JSON.stringify(nonceHash)},
-      usePopup: false
-    });
-  </script>`
-    : "";
-
-  const ssoSection = googleButton || appleButton
-    ? `<div style="margin:1.25rem 0 0">
-    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
-      <div style="flex:1;height:1px;background:${theme.line}"></div>
-      <span style="font-size:.78rem;color:${theme.dim}">or</span>
-      <div style="flex:1;height:1px;background:${theme.line}"></div>
-    </div>
-    ${appleButton}
-    ${googleButton}
-  </div>`
-    : "";
-
-  return new Response(
-    `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PidginDocs</title>
-<style>
-  *{box-sizing:border-box}
-  body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:
-    linear-gradient(180deg,#dfe9db 0%,${theme.sand} 42%,${theme.surface} 100%);
-    color:${theme.ink};display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:24px}
-  .card{position:relative;background:rgba(254,252,247,.94);border:1px solid ${theme.line};border-radius:8px;
-    padding:2.2rem;max-width:420px;width:100%;box-shadow:0 20px 54px rgba(16,35,53,.14);overflow:hidden}
-  .card:before{content:"";position:absolute;inset:0 0 auto;height:7px;background:linear-gradient(90deg,#0b5788 0 68%,#f05243 68% 76%,#bfe8f6 76% 100%)}
-  .brand{display:flex;align-items:center;gap:.8rem;margin-bottom:1.1rem}
-  .brand img{width:64px;height:64px;border-radius:15px;box-shadow:0 10px 26px rgba(16,35,53,.16)}
-  h1{font-size:2rem;line-height:1.05;letter-spacing:0;margin:0;color:${theme.ink}}
-  p{color:${theme.muted};font-size:.95rem;line-height:1.55;margin:0 0 1.5rem}
-  input{width:100%;padding:.7rem 1rem;border:1px solid ${theme.line};border-radius:6px;
-    font-size:.95rem;margin-bottom:1rem;background:${theme.surface};color:${theme.ink}}
-  input:focus{outline:2px solid rgba(28,95,196,.18);border-color:${theme.accent}}
-  button{width:100%;padding:.75rem;background:${theme.primary};color:${theme.paper};border:none;
-    border-radius:6px;font-size:.9rem;font-weight:600;cursor:pointer}
-  button:hover{background:${theme.primaryDeep}}
-  .error{color:${theme.error};font-size:.85rem;margin-bottom:1rem}
-  a{color:${theme.accent};font-weight:700;text-decoration:none}
-  a:hover{text-decoration:underline}
-</style></head><body>
-<div class="card">
-  <div class="brand">
-    <img src="/assets/app-icon.jpg" alt="" width="64" height="64">
-    <h1>PidginDocs</h1>
-  </div>
-  <p>Enter your email to receive a PidginDocs login link.</p>
-  ${error ? `<div class="error">${error}</div>` : ""}
-  <form method="POST" action="/auth/login-form">
-    <input type="hidden" name="next" value="${esc(next || "")}">
-    <input type="email" name="email" placeholder="you@email.com" required>
-    <button type="submit">Send Login Link</button>
-  </form>
-  ${ssoSection}
-  <p style="margin:1.25rem 0 0;font-size:.85rem"><a href="/onboarding">Instance information</a></p>
-</div></body></html>`,
-    {
-      headers: {
-        "Content-Type": "text/html",
-        ...(googleStateCookie ? { "Set-Cookie": googleStateCookie } : {}),
-      },
-    }
-  );
-}
+export { loginPage } from "./login";
 
 // Shown when a non-member tries to sign in. PidginDocs is invite-only with no
 // public sign-up, so we say so plainly instead of leaving them at a login form.

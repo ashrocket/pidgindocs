@@ -1,5 +1,8 @@
+import { boundedText } from "../bounded-body";
+import { canWriteContentScope } from "../content-scope";
 import { Env, MessagePayload } from "../types";
 import { deferOrAwait, json } from "../utils";
+import { withUnits } from "../meter";
 import { resolveApiKeyUser, verifySession, unauthorized, resolveCallerUserId } from "../middleware";
 import { deliverToDestinations } from "../destinations";
 import { appendLibraryFilters, loadLibraryPlacements, type LibraryPlacement } from "../library";
@@ -14,6 +17,10 @@ import {
 } from "../documents";
 import {
   createMessage,
+  createOrFoldStatus,
+  type CreateMessageInput,
+  type CreateMessageResult,
+  type FoldStatusInput,
   loadMessageBlocks,
   MessageBlockInputError,
   type SerializedMessageBlock,
@@ -152,33 +159,37 @@ async function loadDocumentPlacements(
   return refs.length ? loadLibraryPlacements(env, userId, refs) : new Map();
 }
 
-export async function handlePostMessage(
-  request: Request,
+export interface ValidatedMessage {
+  payload: MessagePayload;
+  html: string | null;
+  markdown: string | null;
+  body: string | null;
+  designSystemName: string | null;
+  docKind: string;
+  instructions: string | null;
+  enhance: ReturnType<typeof parseEnhanceLevel>;
+  interactive: boolean;
+}
+
+// Field checks shared by POST /api/messages and POST /api/batch. Pure: returns
+// the 400 message or the normalized payload; it writes nothing.
+export function validateMessagePayload(
   env: Env,
-  ctx?: ExecutionContext
-): Promise<Response> {
-  const authedUser = await resolveApiKeyUser(request.headers, env);
-  if (!authedUser) return unauthorized();
-
-  let payload: MessagePayload;
-  try {
-    payload = (await request.json()) as MessagePayload;
-  } catch {
-    return json({ ok: false, error: "invalid JSON body" }, 400);
-  }
-
+  input: MessagePayload
+): { error: string } | { value: ValidatedMessage } {
+  let payload = input;
   // Validate required fields
   if (
     !payload.type || !payload.title || !payload.instance ||
     !payload.instance.model || !payload.instance.session_id ||
     !payload.instance.project || !payload.instance.source
   ) {
-    return json({ ok: false, error: "missing required fields: type, title, instance{model,session_id,project,source}" }, 400);
+    return { error: "missing required fields: type, title, instance{model,session_id,project,source}" };
   }
 
   const validTypes = ["message", "question", "status", "document"] as const;
   if (!validTypes.includes(payload.type as any)) {
-    return json({ ok: false, error: `invalid type "${payload.type}": must be one of ${validTypes.join(", ")}` }, 400);
+    return { error: `invalid type "${payload.type}": must be one of ${validTypes.join(", ")}` };
   }
 
   const html = typeof payload.html === "string" && payload.html.trim() ? payload.html : null;
@@ -194,10 +205,7 @@ export async function handlePostMessage(
       ? payload.doc_kind.trim()
       : "doc";
   if (payload.type === "document" && !VALID_DOCUMENT_KINDS.has(docKind)) {
-    return json(
-      { ok: false, error: '"doc_kind" must be one of doc, decision_memo, meeting_note, spec, runbook' },
-      400
-    );
+    return { error: '"doc_kind" must be one of doc, decision_memo, meeting_note, spec, runbook' };
   }
   const instructions =
     typeof payload.instructions === "string" && payload.instructions.trim()
@@ -208,35 +216,31 @@ export async function handlePostMessage(
   try {
     enhance = parseEnhanceLevel(payload.enhance);
   } catch (err) {
-    if (err instanceof PublishInputError) return json({ ok: false, error: err.message }, 400);
+    if (err instanceof PublishInputError) return { error: err.message };
     throw err;
   }
 
   if (html && markdown) {
-    return json({ ok: false, error: 'provide exactly one of "html" or "markdown"' }, 400);
+    return { error: 'provide exactly one of "html" or "markdown"' };
   }
   // Interactive docs are finished HTML+JS apps; the typeset/enhancement
   // pipelines only produce static pages, so raw html is the only valid input.
+  if (payload.final !== undefined && typeof payload.final !== "boolean") {
+    return { error: '"final" must be a boolean' };
+  }
   const interactive = payload.interactive === true;
   if (interactive && !html) {
-    return json({ ok: false, error: '"interactive" requires raw html input' }, 400);
+    return { error: '"interactive" requires raw html input' };
   }
   if ((designSystemName || enhance || instructions) && !markdown) {
-    return json(
-      { ok: false, error: '"design_system", "enhance", and "instructions" require markdown input' },
-      400
-    );
+    return { error: '"design_system", "enhance", and "instructions" require markdown input' };
   }
   if (enhance && !isEnhancementProviderConfigured(env, enhance)) {
-    return json(
-      {
-        ok: false,
-        error: enhance === "research"
-          ? "research enhancement requires ANTHROPIC_API_KEY to be configured on the server"
-          : "enhancement requires a Workers AI binding or ANTHROPIC_API_KEY to be configured on the server",
-      },
-      400
-    );
+    return {
+      error: enhance === "research"
+        ? "research enhancement requires ANTHROPIC_API_KEY to be configured on the server"
+        : "enhancement requires a Workers AI binding or ANTHROPIC_API_KEY to be configured on the server",
+    };
   }
 
   // HTML and markdown payloads are always documents. Older/loose clients
@@ -247,15 +251,54 @@ export async function handlePostMessage(
   }
 
   if (payload.blocks && payload.type === "document") {
-    return json(
-      { ok: false, error: '"blocks" are supported for message, question, and status only' },
-      400
-    );
+    return { error: '"blocks" are supported for message, question, and status only' };
   }
 
   if (payload.type === "document" && !html && !markdown && !body) {
-    return json({ ok: false, error: "document messages require html, markdown, or body content" }, 400);
+    return { error: "document messages require html, markdown, or body content" };
   }
+
+  return {
+    value: { payload, html, markdown, body, designSystemName, docKind, instructions, enhance, interactive },
+  };
+}
+
+export async function handlePostMessage(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext
+): Promise<Response> {
+  const authedUser = await resolveApiKeyUser(request.headers, env);
+  if (!authedUser) return unauthorized();
+
+  let payload: MessagePayload;
+  try {
+    payload = JSON.parse(await boundedText(request,20*1024*1024)) as MessagePayload;
+  } catch {
+    return json({ ok: false, error: "invalid JSON body" }, 400);
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ok:false,error:"invalid JSON body"},400);
+  if (!await canWriteContentScope(env,authedUser.userId,payload.team_id,payload.project_id)) return json({ok:false,error:"forbidden"},403);
+  const validated = validateMessagePayload(env, payload);
+  if ("error" in validated) return json({ ok: false, error: validated.error }, 400);
+  const { html, markdown, body, designSystemName, docKind, instructions, enhance, interactive } = validated.value;
+  payload = validated.value.payload;
+
+  // Living status item: a status from a stable session updates its open row.
+  const statusFold: FoldStatusInput | null =
+    payload.type === "status" && !payload.blocks?.length
+      ? {
+          userId: authedUser.userId,
+          teamId: payload.team_id ?? null,
+          projectId: payload.project_id ?? null,
+          sessionId: payload.instance.session_id,
+          instanceProject: payload.instance.project,
+          title: payload.title,
+          body,
+          final: payload.final === true,
+        }
+      : null;
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -312,7 +355,7 @@ export async function handlePostMessage(
   const sourceSize = markdown ? new TextEncoder().encode(markdown).byteLength : 0;
   if (payload.type === "document" && docHtml) docKey = `docs/${id}.html`;
 
-  let created;
+  let created: CreateMessageResult & { folded?: boolean };
   try {
     if (docKey && docHtml) {
       await env.DOCS.put(docKey, docHtml, {
@@ -327,9 +370,7 @@ export async function handlePostMessage(
       await storeSourceMarkdown(env, id, markdown, payload.title);
     }
 
-    created = await createMessage(
-      env,
-      {
+    const messageInput: CreateMessageInput = {
         id,
         type: payload.type,
         title: payload.title,
@@ -352,9 +393,10 @@ export async function handlePostMessage(
         instance: payload.instance,
         userId: authedUser.userId,
         blocks: payload.blocks,
-      },
-      ctx
-    );
+      };
+    created = statusFold
+      ? await createOrFoldStatus(env, messageInput, statusFold, ctx)
+      : await createMessage(env, messageInput, ctx);
   } catch (err) {
     if (docKey) {
       await env.DOCS.delete(docKey).catch(() => {});
@@ -365,6 +407,10 @@ export async function handlePostMessage(
       return json({ ok: false, error: err.message }, 400);
     }
     throw err;
+  }
+
+  if (statusFold && "folded" in created && created.folded) {
+    return withUnits(json({ ok: true, data: { id: created.id, type: "status", folded: true } }, 200), { fold: 1 });
   }
 
   if (enhance && payload.type === "document") {
@@ -402,7 +448,8 @@ export async function handlePostMessage(
 
   await deferOrAwait(ctx, destinationPromise);
 
-  return json({ ok: true, data: { id, type: payload.type } }, 201);
+  const response = json({ ok: true, data: { id, type: payload.type } }, 201);
+  return payload.type === "status" ? withUnits(response, { status: 1 }) : response;
 }
 
 export async function handleGetMessages(

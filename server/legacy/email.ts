@@ -170,14 +170,6 @@ export function emailWrapper(content: string): string {
 </html>`;
 }
 
-export function loginEmailHtml(magicLink: string): string {
-  const content = `
-  <div style="padding:0 40px 32px;text-align:center;">
-    ${ENVELOPE_SVG}
-    <div style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:bold;color:${theme.ink};margin:16px 0 10px;">Sign in to PidginDocs</div>
-    <p style="font-size:15px;color:${theme.muted};line-height:1.6;margin:0 0 28px;">Tap below to sign in. This link expires in 5&nbsp;minutes.</p>
-    <a href="${escapeHtml(magicLink)}" style="background:${theme.primary};color:${theme.paper};font-size:15px;font-weight:500;letter-spacing:0.2px;padding:14px 40px;border-radius:6px;text-decoration:none;display:inline-block;">Sign in to PidginDocs</a>
-    <p style="font-size:12px;color:${theme.dim};line-height:1.5;margin:24px 0 0;">If you didn&rsquo;t request this, you can safely ignore this email.</p>
-  </div>`;
-  return emailWrapper(content);
+export function loginEmailHtml(magicLink: string, code?: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body style="margin:0;background:#FEFCF7;color:#102335;font-family:Arial,sans-serif"><div style="max-width:480px;margin:0 auto;padding:48px 28px"><p style="font-family:Georgia,serif;font-size:25px;margin:0 0 36px">PidginDocs</p><h1 style="font-family:Georgia,serif;font-weight:normal;font-size:30px;margin:0 0 20px">Sign in to PidginDocs</h1><p style="font-size:16px;line-height:1.6">Use this link to sign in. It expires in 5 minutes.</p><p style="margin:28px 0"><a href="${escapeHtml(magicLink)}" style="background:#191b1c;color:#fff;font-size:16px;padding:14px 24px;border-radius:8px;text-decoration:none;display:inline-block">Sign in</a></p>${code ? `<p style="font-size:15px;line-height:1.6">If you started in another browser or device, enter this code there:</p><p style="font-size:28px;letter-spacing:4px;font-weight:bold">${escapeHtml(code.slice(0,4))} ${escapeHtml(code.slice(4))}</p>` : ""}<p style="font-size:13px;line-height:1.6;color:#405A77;margin-top:32px">If you did not request this email, you can ignore it.</p></div></body></html>`;
 }

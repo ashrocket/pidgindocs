@@ -36,3 +36,6 @@ worktrees/
 
 # Duva split: local R2 copy manifests (the workflow keeps them as run artifacts)
 duva-retailaer-r2-manifest.json
+
+# Local browser verification artifacts
+output/playwright/

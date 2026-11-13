@@ -7,6 +7,7 @@ class InviteDB {
   teamOwner: string | null = null;
   membership: string | null = null;
   projectTeam: string | null = null;
+  proofs = new Set<string>();
 
   prepare(sql: string) {
     const db = this;
@@ -20,6 +21,7 @@ class InviteDB {
         throw new Error(`Unexpected query: ${sql}`);
       },
       async run() {
+        if (sql.startsWith("INSERT INTO login_proof_uses")) { const id=String(binds[0]);const fresh=!db.proofs.has(id);db.proofs.add(id);return {success:true,meta:{changes:fresh?1:0}}; }
         if (sql.startsWith("UPDATE users SET status = 'active'")) db.user.status = "active";
         else if (sql.startsWith("INSERT OR IGNORE INTO teams")) db.teamOwner = binds[3] as string;
         else if (sql.startsWith("INSERT OR IGNORE INTO team_memberships")) db.membership = binds[1] as string;

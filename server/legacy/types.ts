@@ -68,6 +68,10 @@ export interface Env {
   // with Sign in with Apple enabled — not the app bundle IDs / iOS client ID.
   // Accepted as a token audience automatically alongside GOOGLE_CLIENT_ID.
   GOOGLE_WEB_CLIENT_ID?: string;
+  // Microsoft web OIDC. Use an Entra tenant UUID, consumers, organizations, or common.
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
+  MICROSOFT_TENANT_ID?: string;
   // Apple's web Services ID. Its value must ALSO be appended to the
   // comma-separated APPLE_AUDIENCES above — that's what actually authorizes
   // the token audience; this var only controls what's rendered client-side.
@@ -132,6 +136,8 @@ export interface MessagePayload {
   // Serve via /idoc/:id with scripts executable (strict no-network CSP, no
   // protection wrapper). Requires raw html input.
   interactive?: boolean;
+  // status only: fold once more, then close the living status item
+  final?: boolean;
   blocks?: MessageBlockInput[];
   instance: InstanceIdentity;
 }

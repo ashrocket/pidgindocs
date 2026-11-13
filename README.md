@@ -29,6 +29,8 @@ scripts/pidgindocs.sh check
 scripts/pidgindocs.sh send --type status --title "Deployment ready" --body "Worker is responding"
 ```
 
+Agents can try a local endpoint before the server. `scripts/pidgindocs-mcp-proxy.mjs` (Node 22, no dependencies) reads a discovery file, `~/.pidgindocs/local-endpoint.json` by default, or the path in `PIDGINDOCS_LOCAL_ENDPOINT_FILE` or `PIDGINDOCS_LOCAL_ENDPOINT_PATHS`. The file must be mode 0600, name a port from 1024 to 65535 and a live pid. The proxy calls `127.0.0.1` with the local token and falls back to the server with your own API key when the endpoint is missing, unreachable, rejects the token or reports it is unavailable. It never falls back after the endpoint accepted a write, because a retry could duplicate it. Use `scripts/pidgindocs.sh call <tool> '<json>'`, or run the proxy as a stdio MCP server.
+
 Create an owner API key through your instance's `/setup` flow. Agent-board commands use the separate project-scoped `PIDGINDOCS_AGENT_KEY` issued for that project.
 
 ## Development

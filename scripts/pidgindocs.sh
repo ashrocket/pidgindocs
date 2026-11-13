@@ -1,6 +1,6 @@
 #!/bin/bash
 # pidgindocs.sh — PidginDocs API client
-# Usage: pidgindocs.sh {send|board|poll|health|check} [args...]
+# Usage: pidgindocs.sh {send|call|local-call|board|poll|health|check} [args...]
 set -euo pipefail
 
 # --- Credentials -----------------------------------------------------------
@@ -14,9 +14,29 @@ PIDGINDOCS_KEY_SOURCE="${PIDGINDOCS_KEY_SOURCE:-none}"
 # `check`/`health` are diagnostics — let them run and report a missing key
 # rather than aborting before they can help the user troubleshoot.
 case "${1:-}" in
-  check|health|board) : "${PIDGINDOCS_API_KEY:=}" ;;
+  check|health|board|local-call) : "${PIDGINDOCS_API_KEY:=}" ;;
   *) : "${PIDGINDOCS_API_KEY:?not set — export PIDGINDOCS_API_KEY (create one at ${PIDGINDOCS_URL}/setup)}" ;;
 esac
+
+# --- Local first, server second ----------------------------------------------
+# The Node proxy reads the local endpoint discovery file, calls 127.0.0.1 with
+# the local token, and falls back to the server with PIDGINDOCS_API_KEY. The
+# local token is never printed or sent to the server.
+PIDGINDOCS_PROXY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pidgindocs-mcp-proxy.mjs"
+
+# pidgindocs_local_call <tool> <json>: prints the result; exit 75 means fall back.
+pidgindocs_local_call() {
+  local args="${2:-}"
+  [[ -z "$args" ]] && args='{}'
+  node "$PIDGINDOCS_PROXY" --local "$1" "$args"
+}
+
+# pidgindocs_call <tool> <json>: local first, then the server.
+pidgindocs_call() {
+  local args="${2:-}"
+  [[ -z "$args" ]] && args='{}'
+  node "$PIDGINDOCS_PROXY" --call "$1" "$args"
+}
 
 cmd_send() {
   local type="" title="" body="" html="" markdown="" project="" priority="normal" source_url="" json_output=false
@@ -781,6 +801,8 @@ cmd_reply() {
 
 case "${1:-}" in
   send)       shift; cmd_send "$@" ;;
+  call)       shift; pidgindocs_call "$@" ;;
+  local-call) shift; pidgindocs_local_call "$@" ;;
   board)      shift; cmd_board "$@" ;;
   artifact)   shift; cmd_artifact "$@" ;;
   ask)        shift; cmd_ask "$@" ;;

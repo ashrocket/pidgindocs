@@ -42,7 +42,7 @@ WORKER_URL = "https://pidgindocs.example.workers.dev"
 MAIL_FROM = "PidginDocs <pidgindocs@example.com>"
 
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["0 3 * * *", "*/5 * * * *"]
 
 [[rules]]
 type = "Data"
