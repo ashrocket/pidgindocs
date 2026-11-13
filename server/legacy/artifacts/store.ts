@@ -671,9 +671,12 @@ export async function patchArtifact(
     throw new ArtifactInputError("artifacts that declare capabilities cannot be public");
   }
   const sharedVersion = patch.sharedVersion === undefined ? row.shared_version : patch.sharedVersion;
-  if (sharedVersion !== null && (sharedVersion < 1 || sharedVersion > row.current_version)) {
+  if (sharedVersion !== null && (!Number.isInteger(sharedVersion) || sharedVersion < 1 || sharedVersion > row.current_version)) {
     throw new ArtifactInputError(`"shared_version" must be between 1 and ${row.current_version}, or null for latest`);
   }
+  if (sharedVersion !== null && !await env.DB.prepare(
+    "SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ?"
+  ).bind(id,sharedVersion).first()) throw new ArtifactInputError("artifact version not found");
   const designSystem = await resolveDesignSystemInput(
     env,
     userId,
@@ -685,7 +688,8 @@ export async function patchArtifact(
   const updated = await env.DB.prepare(
     `UPDATE artifacts SET title = ?, description = ?, visibility = ?, shared_version = ?,
       design_system = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?
-      AND current_version = ? AND team_id IS ? AND project_id IS ? AND ${scopeGuard.sql}`
+      AND current_version = ? AND team_id IS ? AND project_id IS ? AND ${scopeGuard.sql}
+      AND (? IS NULL OR EXISTS(SELECT 1 FROM artifact_versions WHERE artifact_id = ? AND version = ?))`
   )
     .bind(
       patch.title?.trim() || row.title,
@@ -693,7 +697,7 @@ export async function patchArtifact(
       visibility,
       sharedVersion,
       designSystem,
-      id,userId,row.current_version,row.team_id,row.project_id,...scopeGuard.binds
+      id,userId,row.current_version,row.team_id,row.project_id,...scopeGuard.binds,sharedVersion,id,sharedVersion
     )
     .run();
   if (!updated.meta.changes) throw new ArtifactForbiddenError();

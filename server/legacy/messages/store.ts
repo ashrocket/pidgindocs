@@ -332,7 +332,18 @@ export async function createMessage(
     )
   );
 
-  const results = await env.DB.batch(statements);
+  let results: D1Result[];
+  try {
+    results = await env.DB.batch(statements);
+  } catch (error) {
+    // The pin trigger aborts the whole batch if a previously checked version
+    // was pruned. Do not classify unrelated/uncertain D1 failures as safe input
+    // refusals: callers must retain their reservation for those outcomes.
+    if (error instanceof Error && error.message.includes("artifact block version unavailable")) {
+      throw new MessageBlockInputError("artifact version no longer available; refresh and retry");
+    }
+    throw error;
+  }
   if (conditional && (results[0]?.meta?.changes ?? 0) === 0) {
     return { id, body, blocks, skipped: true };
   }

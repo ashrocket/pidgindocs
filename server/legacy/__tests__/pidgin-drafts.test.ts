@@ -2,7 +2,8 @@ import { env as bindings } from "cloudflare:workers";
 import { applyD1Migrations, type D1Migration } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import worker from "../index";
-import { loadArtifactVersionContent, publishArtifact, deleteArtifact, flushArtifactUploadCleanup } from "../artifacts/store";
+import { createMessage, MessageBlockInputError } from "../messages/store";
+import { loadArtifactVersionContent, patchArtifact, publishArtifact, deleteArtifact, flushArtifactUploadCleanup } from "../artifacts/store";
 import { sha256Hex } from "../auth-utils";
 import { commitDraft, commitStaleDrafts, currentDraft, deleteDraft, deleteOldDrafts, flushDraftCleanup, putDraft, DRAFT_KEEP_MS, DRAFT_MAX_BYTES, DRAFT_MAX_RETAINED_BYTES } from "../drafts";
 import { setMeterHooks, type Units } from "../meter";
@@ -202,7 +203,7 @@ it("rechecks new block and share pins inside each prune transaction",async()=>{
  for(const kind of ["block","share"]) {
   const u=await user(),initial=await publishArtifact(env,{userId:u.id,markdown:"# pinned original",favicon:"📄"}),id=initial.artifact.id;
   const first=await env.DB.prepare("SELECT r2_key FROM artifact_versions WHERE artifact_id = ? AND version = 1").bind(id).first<{r2_key:string}>();
-  for(let version=2;version<=20;version++)await env.DB.prepare("INSERT INTO artifact_versions(artifact_id,version,r2_key,size) VALUES(?,?,?,1)").bind(id,version,`artifacts/${id}/fixture-${version}.html`).run();
+  await env.DB.batch(Array.from({length:19},(_,index)=>{const version=index+2;return env.DB.prepare("INSERT INTO artifact_versions(artifact_id,version,r2_key,size) VALUES(?,?,?,1)").bind(id,version,`artifacts/${id}/fixture-${version}.html`);}));
   await env.DB.prepare("UPDATE artifacts SET current_version = 20 WHERE id = ?").bind(id).run();
   const message=key();await env.DB.prepare("INSERT INTO messages(id,type,title,body,instance_model,instance_session_id,instance_project,instance_source,user_id) VALUES(?,'message','pin','pin','test','test','test','test',?)").bind(message,u.id).run();
   let batches=0;
@@ -222,4 +223,62 @@ it("rechecks new block and share pins inside each prune transaction",async()=>{
   expect((await env.DB.prepare("SELECT state FROM artifact_upload_attempts WHERE artifact_id = ? AND version = 1").bind(id).first<{state:string}>())!.state).toBe("retired");
   await flushArtifactUploadCleanup(env);expect(await env.DOCS.head(first!.r2_key)).toBeNull();expect(await loadArtifactVersionContent(env,id,22)).toContain("new latest");
  }
+});
+
+
+it("refuses sharing an artifact version that was already pruned",async()=>{
+ const u=await user(),first=await publishArtifact(env,{userId:u.id,html:"<p>old</p>",favicon:"📄"}),id=first.artifact.id;
+ await publishArtifact(env,{userId:u.id,artifactId:id,html:"<p>current</p>"});
+ await env.DB.prepare("DELETE FROM artifact_versions WHERE artifact_id = ? AND version = 1").bind(id).run();
+ expect((await u.call("PATCH",`/api/artifacts/${id}`,{shared_version:1})).status).toBe(400);
+ expect((await env.DB.prepare("SELECT shared_version FROM artifacts WHERE id = ?").bind(id).first<{shared_version:number|null}>())!.shared_version).toBeNull();
+ expect((await u.call("PATCH",`/api/artifacts/${id}`,{shared_version:2})).status).toBe(200);
+ expect((await u.call("PATCH",`/api/artifacts/${id}`,{shared_version:null})).status).toBe(200);
+});
+
+it("refuses a shared-version pin when pruning wins immediately before the update",async()=>{
+ const u=await user(),first=await publishArtifact(env,{userId:u.id,html:"<p>old</p>",favicon:"📄"}),id=first.artifact.id;
+ await publishArtifact(env,{userId:u.id,artifactId:id,html:"<p>current</p>"});
+ let unlinked=false;
+ const DB=new Proxy(env.DB,{get(target,prop:string){if(prop==="prepare")return(sql:string)=>{
+  const statement=target.prepare(sql);
+  if(!sql.startsWith("UPDATE artifacts SET title = ?, description = ?, visibility = ?, shared_version = ?"))return statement;
+  const intercept=(stmt:D1PreparedStatement):D1PreparedStatement=>new Proxy(stmt,{get(real,method:string){
+   if(method==="bind")return(...args:unknown[])=>intercept(real.bind(...args));
+   if(method==="run")return async()=>{unlinked=true;await target.prepare("DELETE FROM artifact_versions WHERE artifact_id = ? AND version = 1").bind(id).run();return real.run();};
+   const value=(real as any)[method];return typeof value==="function"?value.bind(real):value;
+  }});
+  return intercept(statement);
+ };const value=(target as any)[prop];return typeof value==="function"?value.bind(target):value;}});
+ await expect(patchArtifact({...env,DB},id,u.id,{sharedVersion:1})).rejects.toThrow();expect(unlinked).toBe(true);
+ expect((await env.DB.prepare("SELECT shared_version FROM artifacts WHERE id = ?").bind(id).first<{shared_version:number|null}>())!.shared_version).toBeNull();
+ expect(await loadArtifactVersionContent(env,id,2)).toContain("current");
+});
+
+
+it("rolls back a whole message when pruning wins before its artifact block batch",async()=>{
+ const u=await user(),first=await publishArtifact(env,{userId:u.id,html:"<p>old</p>",favicon:"📄"}),artifactId=first.artifact.id;
+ await publishArtifact(env,{userId:u.id,artifactId,html:"<p>current</p>"});
+ const id=key(),input={id,userId:u.id,type:"message" as const,title:"pin race",body:"summary",instance:{model:"test",session_id:"test",project:"test",source:"test"},blocks:[{type:"artifact" as const,artifact_id:artifactId,version:1,summary:"Pinned artifact"}]};
+ const DB=new Proxy(env.DB,{get(target,prop:string){if(prop==="batch")return async(statements:D1PreparedStatement[])=>{
+  await target.prepare("DELETE FROM artifact_versions WHERE artifact_id = ? AND version = 1").bind(artifactId).run();return target.batch(statements);
+ };const value=(target as any)[prop];return typeof value==="function"?value.bind(target):value;}});
+ await expect(createMessage({...env,DB},input)).rejects.toBeInstanceOf(MessageBlockInputError);
+ expect(await env.DB.prepare("SELECT id FROM messages WHERE id = ?").bind(id).first()).toBeNull();expect(await env.DB.prepare("SELECT message_id FROM message_blocks WHERE message_id = ?").bind(id).first()).toBeNull();
+ expect(await env.DB.prepare("SELECT id FROM audit_log WHERE user_id = ? AND action = 'post_message'").bind(u.id).first()).toBeNull();
+ await createMessage(env,{...input,blocks:[{...input.blocks[0],version:2}]});
+ expect((await env.DB.prepare("SELECT artifact_version FROM message_blocks WHERE message_id = ?").bind(id).first<{artifact_version:number}>())!.artifact_version).toBe(2);
+});
+
+
+it("checks the new artifact tuple on block updates and permits markdown conversion",async()=>{
+ const u=await user(),artifact=await publishArtifact(env,{userId:u.id,html:"<p>version one</p>",favicon:"📄"}),id=key();
+ await createMessage(env,{id,userId:u.id,type:"message",title:"block update",body:null,instance:{model:"test",session_id:"test",project:"test",source:"test"},blocks:[{type:"markdown",markdown:"note"}]});
+ const update=(version:number)=>env.DB.prepare("UPDATE message_blocks SET kind = 'artifact',markdown = NULL,artifact_id = ?,artifact_version = ? WHERE message_id = ? AND position = 0").bind(artifact.artifact.id,version,id).run();
+ await expect(update(2)).rejects.toThrow("artifact block version unavailable");
+ expect((await env.DB.prepare("SELECT kind FROM message_blocks WHERE message_id = ?").bind(id).first<{kind:string}>())!.kind).toBe("markdown");
+ await update(1);await expect(update(2)).rejects.toThrow("artifact block version unavailable");
+ expect((await env.DB.prepare("SELECT artifact_version FROM message_blocks WHERE message_id = ?").bind(id).first<{artifact_version:number}>())!.artifact_version).toBe(1);
+ await env.DB.prepare("UPDATE message_blocks SET kind = 'markdown',markdown = 'note',artifact_id = NULL,artifact_version = NULL WHERE message_id = ?").bind(id).run();
+ expect((await env.DB.prepare("SELECT kind FROM message_blocks WHERE message_id = ?").bind(id).first<{kind:string}>())!.kind).toBe("markdown");
 });
