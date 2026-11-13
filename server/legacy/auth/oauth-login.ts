@@ -16,6 +16,7 @@ interface ProviderConfig {
 }
 
 const DEFAULT_APPLE_AUDIENCES: string[] = [];
+const LOGIN_CLOCK_SKEW_SECONDS = 60;
 
 // Resolve provider verification config from env. Returns null when the provider
 // is not configured (→ 501), so an operator can ship Apple before Google.
@@ -163,6 +164,7 @@ export async function verifyProviderAssertion(
         audiences: config.audiences,
         jwks,
         now: deps.now,
+        clockSkewSeconds: LOGIN_CLOCK_SKEW_SECONDS,
         requireEmailVerified: config.requireEmailVerified,
         // When the client sends a nonce, bind the token to it (Apple replay hardening).
         expectedNonce: nonce,
@@ -181,7 +183,9 @@ export async function verifyProviderAssertion(
     email = verified.email.toLowerCase();
     sub = typeof verified.claims.sub === "string" ? verified.claims.sub : undefined;
     nonceHash = typeof verified.claims.nonce === "string" ? verified.claims.nonce : undefined;
-    proofExpiry = Number(verified.claims.exp);
+    // Verification accepts the inclusive exp + skew boundary. Retain the
+    // receipt through that entire window, including its final second.
+    proofExpiry = Number(verified.claims.exp) + LOGIN_CLOCK_SKEW_SECONDS + 1;
   } catch (err) {
     const message = err instanceof Error ? err.message : "token verification failed";
     return { ok: false, status: 401, error: `sign-in rejected: ${message}` };

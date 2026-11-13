@@ -152,3 +152,16 @@ it("atomically consumes Google assertions even across concurrent KV readers",asy
   const results=await Promise.all([verifyProviderIdToken(target,"google",token,nonce,deps),verifyProviderIdToken(target,"google",token,nonce,deps)]);
   expect(results.filter(r=>r.ok)).toHaveLength(1);expect(results.filter(r=>!r.ok)).toHaveLength(1);
 });
+
+it("keeps consumed provider proofs through the entire accepted clock-skew window",async()=>{
+  const pair=await generateKeyPair("RS256"),jwk=await exportJWK(pair.publicKey);jwk.kid="skew-test";jwk.alg="RS256";
+  const now=Math.floor(Date.now()/1000),target={...env,GOOGLE_WEB_CLIENT_ID:"skew-test"};
+  const deps={now,fetchJwks:async()=>({keys:[{...jwk,kty:"RSA"}]})};
+  for(const expiredSeconds of [30,60]) {
+    const u=await user(),nonce=crypto.randomUUID();
+    const token=await new SignJWT({email:u.email,email_verified:true,nonce:await sha256Hex(nonce)})
+      .setProtectedHeader({alg:"RS256",kid:jwk.kid}).setIssuer("https://accounts.google.com").setAudience("skew-test").setSubject(u.id).setIssuedAt(now-300).setExpirationTime(now-expiredSeconds).sign(pair.privateKey);
+    expect((await verifyProviderIdToken(target,"google",token,nonce,deps)).ok).toBe(true);
+    expect((await verifyProviderIdToken(target,"google",token,nonce,deps)).ok).toBe(false);
+  }
+});
