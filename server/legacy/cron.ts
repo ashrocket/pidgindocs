@@ -1,4 +1,5 @@
 import { Env } from "./types";
+import { flushArtifactUploadCleanup } from "./artifacts/store";
 import { runWorkspaceBackup } from "./workspace-backup";
 import { sourceMarkdownKey } from "./documents";
 import { sweepBatchReceipts } from "./routes/batch";
@@ -119,6 +120,7 @@ export async function scheduled(
     env.DB.prepare("DELETE FROM oauth_login_states WHERE id IN (SELECT id FROM oauth_login_states WHERE expires_at <= ? LIMIT 1000)").bind(Math.floor(controller.scheduledTime/1000)),
     env.DB.prepare("DELETE FROM login_proof_uses WHERE id IN (SELECT id FROM login_proof_uses WHERE expires_at <= ? LIMIT 1000)").bind(Math.floor(controller.scheduledTime/1000)),
   ]);
+  await flushArtifactUploadCleanup(env);
   try {
     const dropped = await deleteOldDrafts(env, controller.scheduledTime);
     if (dropped) console.log(`Draft cron: deleted ${dropped} drafts over 7 days old`);

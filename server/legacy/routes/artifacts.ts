@@ -10,6 +10,7 @@ import { loadLibraryPlacements } from "../library";
 import { sendPushNotification } from "../push/apns";
 import { checkRateLimit } from "../ratelimit";
 import {
+  ArtifactForbiddenError,
   ArtifactConflictError,
   ArtifactInputError,
   artifactUrl,
@@ -117,7 +118,7 @@ export async function handlePublishArtifact(
           artifactId: body.artifact_id, sourcePath: body.source_path,
           baseVersion: typeof body.base_version === "number" ? body.base_version : undefined,
           force: body.force === true, visibility: body.visibility, role: body.role,
-          sessionId: body.instance?.session_id, userId,
+          sessionId: body.instance?.session_id, teamId: body.team_id, projectId: body.project_id, userId,
         });
       } catch (err) {
         return artifactErrorResponse(err);
@@ -207,6 +208,7 @@ export async function handlePublishArtifact(
 }
 
 function artifactErrorResponse(err: unknown): Response {
+  if (err instanceof ArtifactForbiddenError) return json({ok:false,error:"forbidden"},403);
   if (err instanceof ArtifactConflictError) {
     return json({ ok: false, error: err.message }, 409);
   }
@@ -290,6 +292,7 @@ export async function handlePatchArtifact(
 ): Promise<Response> {
   const userId = await resolveCallerUserId(request, env);
   if (!userId) return unauthorized();
+  if (!allowsCredentialWrite(request)) return json({ok:false,error:"forbidden"},403);
 
   let body: {
     title?: string;
@@ -299,7 +302,7 @@ export async function handlePatchArtifact(
     design_system?: string | null;
   };
   try {
-    body = (await request.json()) as typeof body;
+    body = JSON.parse(await boundedText(request,64 * 1024)) as typeof body;
   } catch {
     return json({ ok: false, error: "invalid JSON body" }, 400);
   }
@@ -315,10 +318,7 @@ export async function handlePatchArtifact(
     if (!row) return json({ ok: false, error: "artifact not found" }, 404);
     return json({ ok: true, data: { artifact: serializeArtifact(env, row) } });
   } catch (err) {
-    if (err instanceof ArtifactInputError) {
-      return json({ ok: false, error: err.message }, 400);
-    }
-    throw err;
+    return artifactErrorResponse(err);
   }
 }
 
@@ -330,6 +330,7 @@ export async function handleDeleteArtifact(
 ): Promise<Response> {
   const userId = await resolveCallerUserId(request, env);
   if (!userId) return unauthorized();
+  if (!allowsCredentialWrite(request)) return json({ok:false,error:"forbidden"},403);
 
   const deleted = await deleteArtifact(env, id, userId);
   if (!deleted) return json({ ok: false, error: "artifact not found" }, 404);

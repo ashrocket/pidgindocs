@@ -1,7 +1,7 @@
 // PidginCore: immutable draft blobs, a current revision pointer, and fenced commits.
 import type { Env } from "./types";
 import { PublishInputError, publishDocument } from "./documents";
-import { ArtifactConflictError, ArtifactInputError, publishArtifact } from "./artifacts/store";
+import { ArtifactForbiddenError, ArtifactConflictError, ArtifactInputError, publishArtifact } from "./artifacts/store";
 import { canWriteContentScope } from "./content-scope";
 import { boundedText } from "./bounded-body";
 import { meter, type Units } from "./meter";
@@ -147,6 +147,7 @@ async function publishStored(env: Env, userId: string, stored: Json): Promise<Dr
     }
     return failure(400, '"kind" must be document or artifact');
   } catch (err) {
+    if (err instanceof ArtifactForbiddenError) return failure(403,"forbidden");
     if (err instanceof ArtifactConflictError) return failure(409, err.message);
     if (err instanceof ArtifactInputError) {
       return failure(err.message === "artifact not found" ? 404 : 400, err.message);

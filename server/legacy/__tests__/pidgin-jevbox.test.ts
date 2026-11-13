@@ -2,6 +2,7 @@ import { env as bindings } from "cloudflare:workers";
 import { applyD1Migrations, type D1Migration } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../index";
+import { publishArtifact, deleteArtifact } from "../artifacts/store";
 import { sha256Hex } from "../auth-utils";
 import type { Env } from "../types";
 import { buildIndex, flatten, htmlToText, metadataCandidates, splitPassages } from "../jevbox/indexing";
@@ -61,13 +62,8 @@ async function addDoc(userId: string, title: string, label: string, markdown: st
   return id;
 }
 
-async function addArtifact(userId: string, title: string, label: string | null, html: string, version = 1) {
-  const id = crypto.randomUUID();
-  await baseEnv.DB.prepare(
-    "INSERT INTO artifacts (id, user_id, title, favicon, instance_project, current_version) VALUES (?, ?, ?, '🕊️', ?, ?)"
-  ).bind(id, userId, title, label, version).run();
-  await baseEnv.DOCS.put(`artifacts/${id}/v${version}.html`, html);
-  return id;
+async function addArtifact(userId: string, title: string, label: string | null, html: string) {
+  return (await publishArtifact(baseEnv,{userId,title,project:label ?? undefined,html,favicon:"🕊️"})).artifact.id;
 }
 
 // A deterministic stand-in for JEV: Choice prefers options whose text
@@ -244,14 +240,13 @@ describe("Jevbox library search routes", () => {
     const { id: user, api } = await makeUser("jev-change");
     const art = await addArtifact(user, "Plan", null, "<h1>Plan</h1><p>First version text about oak.</p>");
     expect((await api("/api/library/search/index", { method: "POST", body: "{}" })).body.data.index.ready).toBe(1);
-    await baseEnv.DB.prepare("UPDATE artifacts SET current_version = 2 WHERE id = ?").bind(art).run();
-    await baseEnv.DOCS.put(`artifacts/${art}/v2.html`, "<h1>Plan</h1><p>Second version text about cedar.</p>");
+    await publishArtifact(baseEnv,{userId:user,artifactId:art,baseVersion:1,html:"<h1>Plan</h1><p>Second version text about cedar.</p>"});
     expect((await api("/api/library/search/index")).body.data.index).toMatchObject({ ready: 0, pending: 1 });
     stubProviders(/cedar/i);
     const search = await api("/api/library/search", { method: "POST", body: JSON.stringify({ query: "cedar" }) });
     expect(search.body.data.results[0].content).toContain("Second version");
 
-    await baseEnv.DB.prepare("DELETE FROM artifacts WHERE id = ?").bind(art).run();
+    await deleteArtifact(baseEnv,art,user);
     expect((await api("/api/library/search/index", { method: "POST", body: "{}" })).body.data.index.total).toBe(0);
     const rows = await baseEnv.DB.prepare("SELECT COUNT(*) AS n FROM library_search_index WHERE user_id = ?").bind(user).first<{ n: number }>();
     expect(rows?.n).toBe(0);

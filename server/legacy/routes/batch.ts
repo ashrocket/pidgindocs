@@ -8,6 +8,7 @@ import { deliverToDestinations } from "../destinations";
 import type { MessageEnvelope } from "../destinations/types";
 import { PublishInputError, publishDocument } from "../documents";
 import {
+  ArtifactForbiddenError,
   ArtifactConflictError,
   ArtifactInputError,
   deleteArtifact,
@@ -221,6 +222,7 @@ async function runItem(
       }
     }
   } catch (err) {
+    if (err instanceof ArtifactForbiddenError) return fail(ref,"forbidden","forbidden");
     if (err instanceof ArtifactConflictError) return fail(ref, "conflict", err.message);
     if (err instanceof ArtifactInputError) {
       return fail(ref, err.message === "artifact not found" ? "not_found" : "invalid", err.message);
