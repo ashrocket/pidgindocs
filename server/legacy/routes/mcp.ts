@@ -1,3 +1,4 @@
+import { canWriteContentScope } from "../content-scope";
 import type { Env, MessageBlockInput } from "../types";
 import { resolveApiKeyUser } from "../middleware";
 import {
@@ -61,7 +62,14 @@ import {
   touchConversation,
 } from "../chat/store";
 import { fanOutChatMessage } from "../chat/fanout";
-import { createMessage, MessageBlockInputError } from "../messages/store";
+import {
+  createMessage,
+  createOrFoldStatus,
+  MessageBlockInputError,
+  type CreateMessageInput,
+  type CreateMessageResult,
+} from "../messages/store";
+import { withUnits, type Units } from "../meter";
 import { deleteMessageForUser } from "./messages";
 import { resolveAgentCredential } from "../agent-board";
 import { AGENT_BOARD_TOOLS, callAgentBoardTool } from "./mcp-agent-board";
@@ -800,6 +808,7 @@ const TOOLS: McpTool[] = [
         source_url: { type: "string", format: "uri" },
         instance_id: { type: "string", description: "If provided, updates working_on for this registered instance atomically." },
         working_on: { type: "string", description: "Short description of what this instance is currently doing. Requires instance_id." },
+        final: { type: "boolean", description: "For type='status' with instance_id: fold this update into the open status item, then close it so the next status starts a new one." },
         blocks: {
           type: "array",
           minItems: 1,
@@ -1029,6 +1038,15 @@ function toolResult(summary: string, structuredContent: unknown, isError = false
     structuredContent,
     isError,
   };
+}
+
+// Units a tool result reports; tools/call copies them to X-Pidgin-Units.
+const resultUnits = new WeakMap<object, Units>();
+
+function toolResultWithUnits(summary: string, structuredContent: unknown, units: Units): Record<string, unknown> {
+  const result = toolResult(summary, structuredContent);
+  resultUnits.set(result, units);
+  return result;
 }
 
 async function callTool(
@@ -2024,6 +2042,8 @@ async function callTool(
     }
 
     case "pidgin_send_message": {
+      if (!await canWriteContentScope(env,userId,args.team_id,args.project_id)) return toolResult("Forbidden.",{error:"forbidden"},true);
+      if (args.final !== undefined && typeof args.final !== "boolean") return toolResult("Invalid final value.",{error:"final must be a boolean"},true);
       const title = requireString(args, "title", null);
       if (title instanceof Response) {
         return toolResult("Invalid title.", { error: "\"title\" must be a non-empty string" }, true);
@@ -2036,6 +2056,10 @@ async function callTool(
       const sourceUrl = optionalString(args, "source_url") || null;
       const instanceId = optionalString(args, "instance_id");
       const workingOn = optionalString(args, "working_on");
+      const final = optionalBoolean(args, "final") === true;
+      // Only a caller-supplied instance_id is a stable session; the generated
+      // mcp-<uuid> fallback below never folds.
+      const explicitSession = instanceId || null;
 
       if (instanceId && workingOn !== undefined) {
         // Scope the working_on update to the caller so one tenant can't write
@@ -2045,11 +2069,9 @@ async function callTool(
         ).bind(workingOn ?? null, instanceId, userId).run();
       }
 
-      let created;
+      let created: CreateMessageResult & { folded?: boolean };
       try {
-        created = await createMessage(
-          env,
-          {
+        const messageInput: CreateMessageInput = {
             type: msgType,
             title,
             body,
@@ -2066,17 +2088,32 @@ async function callTool(
           docKind: docKind || "doc",
           userId,
           blocks: args.blocks as MessageBlockInput[] | undefined,
-        },
-          ctx
-        );
+        };
+        created = explicitSession && msgType === "status" && !(Array.isArray(args.blocks) && args.blocks.length)
+          ? await createOrFoldStatus(env, messageInput, {
+              userId,
+              teamId: optionalString(args, "team_id") ?? null,
+              projectId: optionalString(args, "project_id") ?? null,
+              sessionId: explicitSession,
+              instanceProject: project,
+              title,
+              body,
+              final,
+            }, ctx)
+          : await createMessage(env, messageInput, ctx);
       } catch (err) {
         if (err instanceof MessageBlockInputError) {
           return toolResult("Invalid composed message.", { error: err.message }, true);
         }
         throw err;
       }
+      if (created.folded) {
+        return toolResultWithUnits(`Updated status "${title}".`, {
+          message: { id: created.id, type: msgType, title, priority, project, folded: true },
+        }, { fold: 1 });
+      }
 
-      return toolResult(
+      const sent = toolResult(
         `Sent ${msgType} "${title}" (${priority}).`,
         {
           message: {
@@ -2090,6 +2127,8 @@ async function callTool(
           },
         }
       );
+      if (msgType === "status") resultUnits.set(sent, { status: 1 });
+      return sent;
     }
 
     case "pidgin_list_design_systems": {
@@ -2474,7 +2513,8 @@ export async function handleMcp(
       }
       if (!authedUser) return jsonRpcError(id, { code: -32601, message: "Agent credentials can only use project board tools" });
       const result = await callTool(env, toolName, rawArguments, request.url, authedUser.userId, ctx);
-      return jsonRpcResult(id, result);
+      const units = resultUnits.get(result);
+      return units ? withUnits(jsonRpcResult(id, result), units) : jsonRpcResult(id, result);
     }
 
     default:

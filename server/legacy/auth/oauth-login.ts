@@ -4,7 +4,7 @@ import { checkRateLimit } from "../ratelimit";
 import { verifyIdToken, UnknownSigningKeyError, type Jwks } from "./jwt-verify";
 import { fetchJwks, type FetchJwksOptions } from "./jwks";
 import { SESSION_TTL_SECONDS, sessionMetadata } from "../middleware";
-import { findActiveUserByEmail } from "../auth-utils";
+import { findActiveUserByEmail, sha256Hex } from "../auth-utils";
 
 export type OAuthProvider = "apple" | "google";
 
@@ -146,7 +146,7 @@ export async function verifyProviderAssertion(
     return { ok: false, status: 429, error: "too many sign-in attempts, try again shortly" };
   }
 
-  if (!idToken) {
+  if (typeof idToken !== "string" || !idToken || idToken.length > 32_768) {
     return { ok: false, status: 400, error: "id_token required" };
   }
 
@@ -155,6 +155,7 @@ export async function verifyProviderAssertion(
   let email: string;
   let sub: string | undefined;
   let nonceHash: string | undefined;
+  let proofExpiry = 0;
   try {
     const verifyWith = (jwks: Jwks) =>
       verifyIdToken(idToken, {
@@ -180,21 +181,19 @@ export async function verifyProviderAssertion(
     email = verified.email.toLowerCase();
     sub = typeof verified.claims.sub === "string" ? verified.claims.sub : undefined;
     nonceHash = typeof verified.claims.nonce === "string" ? verified.claims.nonce : undefined;
+    proofExpiry = Number(verified.claims.exp);
   } catch (err) {
     const message = err instanceof Error ? err.message : "token verification failed";
     return { ok: false, status: 401, error: `sign-in rejected: ${message}` };
   }
 
-  // Single-use nonce: even a validly-signed token can't be redeemed twice within
-  // its short validity window. Keyed by the token's nonce hash; TTL covers the
-  // token lifetime (Apple id_tokens last ~10 min).
-  if (nonce && nonceHash) {
-    const nonceKey = `oauth_nonce:${nonceHash}`;
-    if (await env.SESSIONS.get(nonceKey)) {
-      return { ok: false, status: 401, error: "sign-in rejected: nonce already used" };
-    }
-    await env.SESSIONS.put(nonceKey, "1", { expirationTtl: 600 });
-  }
+  // D1 arbitrates concurrent redemptions; KV get/put cannot provide single use.
+  const now = deps.now ?? Math.floor(Date.now()/1000);
+  const proofId = await sha256Hex(`${provider}:${nonceHash || idToken}`);
+  const claimed = await env.DB.prepare("INSERT INTO login_proof_uses (id,expires_at) VALUES (?,?) ON CONFLICT DO NOTHING")
+    .bind(proofId, proofExpiry).run();
+  if (!claimed.meta.changes) return {ok:false,status:401,error:"sign-in rejected: nonce already used"};
+  await env.DB.prepare("DELETE FROM login_proof_uses WHERE id IN (SELECT id FROM login_proof_uses WHERE expires_at <= ? LIMIT 100)").bind(now).run();
 
   return { ok: true, email, sub };
 }

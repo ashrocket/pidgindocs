@@ -1,3 +1,4 @@
+import { boundedText, boundedForm } from "../bounded-body";
 import { Env } from "../types";
 import { json } from "../utils";
 import { loginEmailHtml, mailDeliveryErrorMessage, sendOwnerEmail } from "../email";
@@ -5,7 +6,7 @@ import { resolveApiKeyUser, unauthorized, SESSION_TTL_SECONDS, sessionMetadata }
 import { checkRateLimit } from "../ratelimit";
 import { loginPage } from "../web/index";
 import { verifyProviderIdToken, rateLimitScope, type OAuthProvider } from "../auth/oauth-login";
-import { decodeOAuthWebState, findActiveUserByEmail } from "../auth-utils";
+import { decodeOAuthWebState, findActiveUserByEmail, sha256Hex } from "../auth-utils";
 import { ensurePersonalWorkspace } from "../workspace";
 
 // Only follow a `next` redirect target when it resolves to our own origin —
@@ -21,20 +22,34 @@ function safeSameOriginNext(next: string | undefined, requestUrl: string): strin
   }
 }
 
+function challengeResponse(challenge: string, browserProof: string): Response {
+  const response = json({ok:true, data:{message:"If this email is registered, a login link has been sent.", challenge}});
+  response.headers.set("Cache-Control", "no-store");
+  response.headers.append("Set-Cookie", `pidgin_email_${challenge}=${browserProof}; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=300`);
+  return response;
+}
+
 export async function handleLogin(
   request: Request,
   env: Env
 ): Promise<Response> {
   let body: { email?: string; next?: string };
   try {
-    body = (await request.json()) as { email?: string; next?: string };
+    body = JSON.parse(await boundedText(request, 16_384)) as { email?: string; next?: string };
   } catch {
     return json({ ok: false, error: "invalid JSON body" }, 400);
   }
-  const { email, next } = body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ok:false,error:"invalid JSON body"},400);
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const next = typeof body.next === "string" && body.next.length <= 2048 ? body.next : undefined;
 
-  if (!email) {
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return json({ ok: false, error: "email required" }, 400);
+  }
+
+  // Cap changing-address floods before allocating D1 or KV challenges.
+  if (!await checkRateLimit(env, `login-ip:${rateLimitScope(request)}`, 30, 600)) {
+    return json({ok:false,error:"Too many sign-in requests. Try again in 10 minutes."},429);
   }
 
   // Rate limit: 5 login requests per email per 10 minutes
@@ -54,19 +69,29 @@ export async function handleLogin(
   // the one shared account.
   const user = await findActiveUserByEmail(env, email);
 
-  if (!user) {
-    return json({ ok: true, data: { message: "If this email is registered, a login link has been sent." } });
-  }
-
   // Generate one-time token
   const token = crypto.randomUUID();
 
-  // Store in KV with 5-minute expiry
+  const challenge = crypto.randomUUID();
+  const browserProof = crypto.randomUUID();
+  let code = "";
+  while (code.length < 8) {
+    const byte = crypto.getRandomValues(new Uint8Array(1))[0];
+    if (byte < 250) code += String(byte % 10);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("DELETE FROM login_challenges WHERE id IN (SELECT id FROM login_challenges WHERE expires_at <= ? LIMIT 100)").bind(now).run();
+  await env.DB.prepare("INSERT INTO login_challenges (id, token, code_hash, email, expires_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(challenge, token, await sha256Hex(`${challenge}:${code}`), email, now + 300).run();
+
+  // The link and code consume this same D1 challenge atomically.
   await env.SESSIONS.put(
     `magic:${token}`,
-    JSON.stringify({ email: user.email, next }),
+    JSON.stringify({ email: user?.email || email, next, challenge, code, browserProofHash: await sha256Hex(browserProof) }),
     { expirationTtl: 300 }
   );
+
+  if (!user) return challengeResponse(challenge, browserProof);
 
   // Build magic link
   const workerUrl = env.WORKER_URL || new URL(request.url).origin;
@@ -76,26 +101,34 @@ export async function handleLogin(
     await sendOwnerEmail(
       env,
       "PidginDocs Login",
-      loginEmailHtml(magicLink),
+      loginEmailHtml(magicLink, code),
       email
     );
   } catch (err) {
+    await env.SESSIONS.delete(`magic:${token}`);
+    await env.DB.prepare("DELETE FROM login_challenges WHERE id = ?").bind(challenge).run();
     const message = mailDeliveryErrorMessage(env, err);
     console.error(`login email failed: ${message}`);
     return json({ ok: false, error: `login email delivery failed: ${message}` }, 502);
   }
 
-  return json({ ok: true, data: { message: "If this email is registered, a login link has been sent." } });
+  return challengeResponse(challenge, browserProof);
 }
 
 export async function handleVerify(
   request: Request,
-  env: Env
+  env: Env,
+  verifiedCode = false
 ): Promise<Response> {
   const url = new URL(request.url);
-  const token = url.searchParams.get("token");
+  if (request.method === "POST" && request.headers.get("Origin") !== url.origin) return new Response("Invalid sign-in request", {status:403});
+  let token = url.searchParams.get("token");
+  if (request.method === "POST") {
+    try { token = String((await boundedForm(request)).get("token") || ""); }
+    catch { return new Response("Invalid sign-in request", {status:400}); }
+  }
 
-  if (!token) {
+  if (!token || token.length > 512) {
     return new Response("Missing token", { status: 400 });
   }
 
@@ -108,16 +141,39 @@ export async function handleVerify(
   let email: string;
   let next: string | undefined;
   let activate: boolean = false;
+  let challenge: string | undefined;
+  let code: string | undefined;
+  let browserProofHash: string | undefined;
   try {
-    const parsed = JSON.parse(raw) as { email?: string; next?: string; activate?: boolean };
-    email = parsed.email || "";
+    const parsed = JSON.parse(raw) as { email?: string; next?: string; activate?: boolean; challenge?: string; code?: string; browserProofHash?: string };
+    email = typeof parsed.email === "string" ? parsed.email : "";
     next = parsed.next;
     activate = parsed.activate === true;
+    challenge = parsed.challenge;
+    code = parsed.code;
+    browserProofHash = parsed.browserProofHash;
   } catch {
     email = raw;
   }
   if (!email) {
     return new Response("Invalid or expired link", { status: 401 });
+  }
+
+  if (challenge && code && browserProofHash && request.method === "GET" && !verifiedCode && !(request.headers.get("Accept") || "").includes("application/json")) {
+    const live = await env.DB.prepare("SELECT id FROM login_challenges WHERE id = ? AND token = ? AND expires_at > ?")
+      .bind(challenge, token, Math.floor(Date.now() / 1000)).first();
+    if (!live) return new Response("Invalid or expired link", {status:401});
+    const proof = (request.headers.get("Cookie") || "").split(";").map(part => part.trim()).find(part => part.startsWith(`pidgin_email_${challenge}=`))?.split("=")[1];
+    if (!proof || await sha256Hex(proof) !== browserProofHash) {
+      return loginPage(env, undefined, next, {challenge, handoff:{code,token}});
+    }
+  }
+
+  if (!challenge) {
+    const now = Math.floor(Date.now()/1000);
+    const claimed = await env.DB.prepare("INSERT INTO login_proof_uses (id,expires_at) VALUES (?,?) ON CONFLICT DO NOTHING")
+      .bind(`magic:${await sha256Hex(token)}`,now+7*86400).run();
+    if (!claimed.meta.changes) return new Response("Invalid or expired link",{status:401});
   }
 
   // Activate pending users on first link click (invite-code flow)
@@ -136,8 +192,13 @@ export async function handleVerify(
   email = active.email;
   if (activate) await ensurePersonalWorkspace(env, active.id);
 
-  // Consume only after activation and workspace creation succeed. A temporary
-  // D1 failure should leave the short-lived link retryable.
+  if (challenge) {
+    const consumed = await env.DB.prepare("DELETE FROM login_challenges WHERE id = ? AND token = ? AND expires_at > ? RETURNING id")
+      .bind(challenge, token, Math.floor(Date.now() / 1000)).first();
+    if (!consumed) return new Response("Invalid or expired link", { status: 401 });
+  }
+
+  // The D1 claim makes the proof single-use even if this KV delete is delayed.
   await env.SESSIONS.delete(`magic:${token}`);
 
   // Create session token (48h sliding expiry — renews on active use)
@@ -209,6 +270,36 @@ export async function handleVerify(
   });
 }
 
+export async function handleVerifyCode(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get("Origin") !== new URL(request.url).origin) return new Response("Invalid sign-in request", {status:403});
+  let form:URLSearchParams;
+  try { form = await boundedForm(request); }
+  catch { return loginPage(env, "The form could not be read. Please start again."); }
+  const challenge = String(form.get("challenge") || "");
+  const code = String(form.get("code") || "").replace(/\s/g, "");
+  const email = String(form.get("email") || "");
+  const next = String(form.get("next") || "/toc");
+  const retry = (error: string) => loginPage(env, error, next, {email, challenge});
+  if (!/^[0-9a-f-]{36}$/.test(challenge) || !/^\d{8}$/.test(code)) return retry("Enter the 8-digit code from your email.");
+  if (!await checkRateLimit(env, `verify-code:${rateLimitScope(request)}`, 30, 600)) return retry("Too many attempts. Wait a few minutes, then try again.");
+  const pending = await env.DB.prepare("SELECT token FROM login_challenges WHERE id = ? AND expires_at > ?")
+    .bind(challenge, Math.floor(Date.now() / 1000)).first<{token:string}>();
+  const proof = (request.headers.get("Cookie") || "").split(";").map(part => part.trim()).find(part => part.startsWith(`pidgin_email_${challenge}=`))?.split("=")[1];
+  const raw = pending ? await env.SESSIONS.get(`magic:${pending.token}`) : null;
+  let saved: {browserProofHash?:string} | null = null;
+  try { saved = raw ? JSON.parse(raw) : null; } catch { /* invalid stored proof fails closed */ }
+  if (pending && (!proof || !saved?.browserProofHash || await sha256Hex(proof) !== saved.browserProofHash)) return retry("Use the browser where you requested this code, or send a new email here.");
+  const row = await env.DB.prepare("UPDATE login_challenges SET attempts = attempts + 1 WHERE id = ? AND expires_at > ? AND attempts < 5 RETURNING token, code_hash")
+    .bind(challenge, Math.floor(Date.now() / 1000)).first<{token:string; code_hash:string}>();
+  if (!row) return retry("This code has expired or reached its attempt limit. Send a new email.");
+  if (await sha256Hex(`${challenge}:${code}`) !== row.code_hash) return retry("That code does not match. Check the code in your latest email.");
+  const url = new URL("/auth/verify", request.url);
+  url.searchParams.set("token", row.token);
+  const response = await handleVerify(new Request(url, {headers:{Accept:"text/html"}}), env, true);
+  if (!response.ok && response.status !== 302) return retry("This code has expired or was already used. Send a new email.");
+  return response;
+}
+
 // Browser-side counterpart to handleOAuthLogin (auth/oauth-login.ts), which is
 // JSON-only and used by the native apps. This one is posted to directly by the
 // SSO widgets rendered in loginPage() (web/index.ts) — Apple's web JS posts
@@ -225,9 +316,9 @@ export async function handleOAuthLoginWeb(
   env: Env,
   provider: OAuthProvider
 ): Promise<Response> {
-  let form: FormData;
+  let form: URLSearchParams;
   try {
-    form = await request.formData();
+    form = await boundedForm(request);
   } catch {
     return await loginPage(env, "Sign-in failed: invalid request.");
   }
@@ -249,6 +340,7 @@ export async function handleOAuthLoginWeb(
     nonce = decoded?.nonce;
   }
 
+  if (provider === "google" && !nonce) return loginPage(env,"Your sign-in session expired. Start again.");
   const safeNext = safeSameOriginNext(next, request.url);
 
   const result = await verifyProviderIdToken(env, provider, idToken, nonce, {

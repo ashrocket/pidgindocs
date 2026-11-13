@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import type { SerializedMessageBlock } from "../messages/store";
 import { signArtifactEmbedToken } from "../artifacts/store";
 import { theme } from "./theme";
+import { READER_STYLE, readerScript } from "./reader-ui";
 
 export interface MessageDetailRow {
   id: string;
@@ -216,7 +217,7 @@ export async function messageDetailPage(
   .artifact-block{background:${theme.paper};border:1px solid ${theme.line};border-radius:14px;overflow:hidden;box-shadow:0 6px 24px rgba(43,31,24,.05)}.artifact-head{width:100%;border:0;background:transparent;color:inherit;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;text-align:left;font-size:.92rem;font-weight:650;cursor:pointer}.head-meta{display:flex;align-items:center;gap:10px;color:${theme.dim};font-weight:450}.provenance{font-size:.76rem}.chevron{font-size:1.1rem;transition:transform .15s}.collapsed .chevron{transform:rotate(-90deg)}.artifact-content{position:relative;border-top:1px solid ${theme.line};border-bottom:1px solid ${theme.line};min-height:180px;background:#fff}.artifact-content iframe{display:block;width:100%;height:240px;border:0}.artifact-loading{position:absolute;inset:0;display:grid;place-items:center;color:${theme.dim};font-size:.85rem}.artifact-block.loaded .artifact-loading,.artifact-block.failed .artifact-loading{display:none}.collapsed .artifact-content,.collapsed footer,.collapsed .fallback{display:none}.artifact-summary{color:${theme.muted};font-size:.88rem;line-height:1.5;margin:0;padding:14px 16px}.fallback{display:none}.failed .fallback,.unavailable .artifact-summary,.capability-card .artifact-summary{display:block}.tombstone{color:${theme.accent};font-size:.78rem}.updated{color:${theme.accent};font-weight:650}.artifact-block footer{display:flex;align-items:center;gap:12px;padding:10px 16px;color:${theme.dim};font-size:.76rem}.artifact-block footer a{color:${theme.primary};text-decoration:none;font-weight:650}.artifact-block footer .open-artifact{margin-left:auto}.retry-artifact{display:none;border:0;background:transparent;color:${theme.primary};font:inherit;font-weight:650;cursor:pointer}.failed .retry-artifact{display:inline}.reply{border-left:3px solid ${theme.primary};padding-left:14px;margin-top:28px}.preference{display:flex;gap:8px;align-items:center;color:${theme.dim};font-size:.8rem;margin:18px 0}
   @media(max-width:600px){main{padding:20px 12px 50px}.title{font-size:1.55rem}.provenance{display:none}.artifact-block footer{flex-wrap:wrap}}
   @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
-</style></head><body><main>
+</style>${READER_STYLE}</head><body><main>
   <div class="top"><a href="/inbox">← Inbox</a><a href="/artifacts">Artifacts</a></div>
   <header><div class="badge">${esc(message.type)}${message.priority === "urgent" ? " · urgent" : ""}</div><h1 class="title">${esc(message.title)}</h1><div class="meta">${esc(message.instance_project || "PidginDocs")} · ${esc(message.instance_model || "agent")} · ${esc(new Date(message.created_at).toLocaleString())}</div></header>
   <label class="preference"><input id="collapse-default" type="checkbox"> Collapse visualizations by default on this browser</label>
@@ -245,7 +246,7 @@ addEventListener('message',function(event){
 });
 document.querySelectorAll('.artifact-content iframe').forEach(function(frame){frame.addEventListener('error',function(){markArtifactFailed(frame);});armArtifactFrame(frame);});
 var pref=document.getElementById('collapse-default');pref.checked=localStorage.getItem('pidgin.widgets.collapsed')==='true';if(pref.checked)document.querySelectorAll('.artifact-block:not(.unavailable)').forEach(function(el){setArtifactCollapsed(el,true);});pref.addEventListener('change',function(){localStorage.setItem('pidgin.widgets.collapsed',String(pref.checked));document.querySelectorAll('.artifact-block:not(.unavailable)').forEach(function(el){setArtifactCollapsed(el,pref.checked);});});
-</script></body></html>`;
+</script>${readerScript("PidginDocs", "/inbox", ".response")}</body></html>`;
 
   const frameSrc = embedOrigin || "'none'";
   return new Response(html, {

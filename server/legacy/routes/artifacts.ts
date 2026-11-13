@@ -1,3 +1,8 @@
+import { boundedText, BodyTooLargeError, allowsCredentialWrite } from "../bounded-body";
+import { canWriteContentScope } from "../content-scope";
+import { artifactAI } from "../artifact-ai";
+import { meter, withUnits, type Units } from "../meter";
+import { getWorkspaceMembership } from "../workspace";
 import type { Env } from "../types";
 import { json } from "../utils";
 import { resolveCallerUserId, unauthorized } from "../middleware";
@@ -14,6 +19,7 @@ import {
   listArtifacts,
   loadArtifactVersionContent,
   patchArtifact,
+  precheckArtifact,
   publishArtifact,
   serializeArtifact,
   serializeArtifactVersion,
@@ -22,7 +28,9 @@ import {
   verifyArtifactToken,
   type ArtifactRow,
 } from "../artifacts/store";
+import { MAX_ARTIFACT_BYTES } from "../artifacts/render";
 import { artifactCsp, designSystemStyleBlock, wrapArtifactHtml } from "../artifacts/render";
+import { addReaderUi } from "../web/reader-ui";
 import { getDesignSystem } from "../design-systems";
 import { compileDesignSystem } from "../documents/design-system";
 
@@ -44,6 +52,8 @@ interface PublishBody {
   capabilities?: Record<string, unknown> | null;
   design_system?: string | null;
   notify?: boolean;
+  // Ask the deployment's AI hook (if any) to compose markdown into a page.
+  ai?: boolean;
   instance?: { session_id?: string; project?: string };
   team_id?: string;
   project_id?: string;
@@ -61,18 +71,84 @@ export async function handlePublishArtifact(
 
   let body: PublishBody;
   try {
-    body = (await request.json()) as PublishBody;
-  } catch {
-    return json({ ok: false, error: "invalid JSON body" }, 400);
+    body = JSON.parse(await boundedText(request, 20 * 1024 * 1024)) as PublishBody;
+  } catch (error) {
+    return json({ ok: false, error: error instanceof BodyTooLargeError ? "body too large" : "invalid JSON body" }, error instanceof BodyTooLargeError ? 413 : 400);
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ok:false,error:"invalid JSON body"},400);
+  if ((body.team_id != null && typeof body.team_id !== "string") || (body.project_id != null && typeof body.project_id !== "string")) return json({ok:false,error:"team_id and project_id must be strings"},400);
+  if (!allowsCredentialWrite(request) || !await canWriteContentScope(env,userId,body.team_id,body.project_id)) return json({ok:false,error:"forbidden"},403);
   if (body.notify !== undefined && typeof body.notify !== "boolean") {
     return json({ ok: false, error: '"notify" must be a boolean' }, 400);
+  }
+  if (body.ai !== undefined && typeof body.ai !== "boolean") {
+    return json({ ok: false, error: '"ai" must be a boolean' }, 400);
+  }
+
+  // ai:true on markdown input. Every input check runs BEFORE the hook, so a
+  // request that would be refused never costs anything. With a hook the call
+  // is metered: reserve {artifact_ai, artifact}, run the hook, publish, then
+  // settle with what happened. "generated" = the hook composed a page,
+  // "failed" = it returned nothing, threw or answered too large (plain
+  // artifact), "none" = no hook (plain artifact, nothing reserved).
+  let html = body.html;
+  let markdown = body.markdown;
+  let aiResult: "none" | "generated" | "failed" | undefined;
+  let reserved = false;
+  let settledOnce = false;
+  let metered = false;
+  // Always fresh: this route does not replay stored responses, so a caller-supplied
+  // key must not decide reservations (a repeat would be refused or double-settled).
+  const rk = `artifact-ai:${userId}:${crypto.randomUUID()}`;
+  const settleAI = async (actual: Units) => {
+    if (!reserved || settledOnce) return;
+    settledOnce = true;
+    try { await meter().settle(env, rk, actual); } catch (err) { console.error("artifact AI settle failed", err); }
+  };
+  if (body.ai === true && typeof markdown === "string" && markdown.trim() && !html) {
+    const hook = artifactAI();
+    if (!hook) {
+      aiResult = "none";
+    } else {
+      metered = true;
+      try {
+        await precheckArtifact(env, {
+          markdown, title: body.title, favicon: body.favicon, label: body.label,
+          artifactId: body.artifact_id, sourcePath: body.source_path,
+          baseVersion: typeof body.base_version === "number" ? body.base_version : undefined,
+          force: body.force === true, visibility: body.visibility, role: body.role,
+          sessionId: body.instance?.session_id, userId,
+        });
+      } catch (err) {
+        return artifactErrorResponse(err);
+      }
+      if (body.team_id !== undefined && body.team_id !== null) {
+        if (typeof body.team_id !== "string") return json({ ok: false, error: '"team_id" must be a string' }, 400);
+        if (body.team_id && !(await getWorkspaceMembership(env, body.team_id, userId))) {
+          return json({ ok: false, error: "forbidden" }, 403);
+        }
+      }
+      const grant = await meter().reserve(env, userId, { artifact_ai: 1, artifact: 1 }, rk);
+      if (!grant.ok) {
+        return json({ ok: false, error: "limit", remaining: grant.remaining } as any, 429);
+      }
+      reserved = true;
+      try {
+        const composed = await hook.generate(env, userId, { markdown, title: body.title });
+        const size = composed?.html ? new TextEncoder().encode(composed.html).byteLength : 0;
+        if (composed?.html && size <= MAX_ARTIFACT_BYTES) { html = composed.html; markdown = undefined; aiResult = "generated"; }
+        else aiResult = "failed";
+      } catch (err) {
+        console.error("artifact AI hook failed", err);
+        aiResult = "failed";
+      }
+    }
   }
 
   try {
     const result = await publishArtifact(env, {
-      html: body.html,
-      markdown: body.markdown,
+      html,
+      markdown,
       title: body.title,
       description: body.description,
       favicon: body.favicon,
@@ -104,7 +180,9 @@ export async function handlePublishArtifact(
       else await push;
     }
 
-    return json(
+    const actual: Units = { artifact: 1, artifact_ai: reserved ? 1 : 0 };
+    await settleAI(actual);
+    const response = json(
       {
         ok: true,
         data: {
@@ -114,19 +192,28 @@ export async function handlePublishArtifact(
           title: result.artifact.title,
           created: result.created,
           artifact: serializeArtifact(env, result.artifact),
+          ...(aiResult ? { ai: aiResult } : {}),
         },
       },
       result.created ? 201 : 200
     );
+    return metered ? withUnits(response, actual) : response;
   } catch (err) {
-    if (err instanceof ArtifactConflictError) {
-      return json({ ok: false, error: err.message }, 409);
-    }
-    if (err instanceof ArtifactInputError) {
-      return json({ ok: false, error: err.message }, err.message === "artifact not found" ? 404 : 400);
-    }
-    throw err;
+    // The publish failed: nothing to charge for the artifact; the AI work, if it ran, was done.
+    if (err instanceof ArtifactConflictError || err instanceof ArtifactInputError) await settleAI({ artifact: 0, artifact_ai: reserved ? 1 : 0 });
+    // Unknown storage outcomes retain the reservation; do not refund a write that may have committed.
+    return artifactErrorResponse(err);
   }
+}
+
+function artifactErrorResponse(err: unknown): Response {
+  if (err instanceof ArtifactConflictError) {
+    return json({ ok: false, error: err.message }, 409);
+  }
+  if (err instanceof ArtifactInputError) {
+    return json({ ok: false, error: err.message }, err.message === "artifact not found" ? 404 : 400);
+  }
+  throw err;
 }
 
 // GET /api/artifacts?limit=&cursor=&q=&scope=
@@ -464,7 +551,7 @@ export async function handleServeArtifact(
     }
   }
 
-  const wrapped = wrapArtifactHtml({
+  const artifactHtml = wrapArtifactHtml({
     content,
     title: row.title,
     favicon: row.favicon,
@@ -481,6 +568,9 @@ export async function handleServeArtifact(
           }
         : undefined,
   });
+  // A full-page artifact can strand a reader outside the app shell. Keep the
+  // return link and reading controls out of message-bound embedded widgets.
+  const wrapped = isEmbed ? artifactHtml : addReaderUi(artifactHtml, "PidginDocs", "/artifacts");
 
   const isPinned = Boolean(vParam);
   const isPublic = row.visibility === "public";

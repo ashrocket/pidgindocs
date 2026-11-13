@@ -263,10 +263,14 @@ async function resolveDesignSystemInput(
   return name;
 }
 
-export async function publishArtifact(
+// Every input check publishArtifact makes before it writes, without writing:
+// identity, label, visibility, role, version conflict, favicon, and the byte
+// cap on the input. Callers that do costly work first (the artifact AI hook)
+// run this before that work. Returns what publishArtifact needs.
+export async function precheckArtifact(
   env: Env,
   input: PublishArtifactInput
-): Promise<PublishArtifactResult> {
+): Promise<{ existing: ArtifactRow | null; favicon: string; hasHtml: boolean; hasMarkdown: boolean }> {
   if (!input.userId) throw new ArtifactInputError("authenticated user required");
   const hasHtml = typeof input.html === "string" && input.html.trim().length > 0;
   const hasMarkdown = typeof input.markdown === "string" && input.markdown.trim().length > 0;
@@ -311,6 +315,22 @@ export async function publishArtifact(
     throw new ArtifactInputError('"favicon" is required (1-2 emoji) when creating an artifact');
   }
   validateFavicon(favicon);
+  const inputBytes = new TextEncoder().encode((hasMarkdown ? input.markdown : input.html) as string).byteLength;
+  if (inputBytes > MAX_ARTIFACT_BYTES) {
+    throw new ArtifactInputError(
+      `input is ${inputBytes} bytes — the maximum is ${MAX_ARTIFACT_BYTES} (16 MiB)`
+    );
+  }
+  return { existing, favicon, hasHtml, hasMarkdown };
+}
+
+
+
+export async function publishArtifact(
+  env: Env,
+  input: PublishArtifactInput
+): Promise<PublishArtifactResult> {
+  const { existing, favicon, hasHtml, hasMarkdown } = await precheckArtifact(env, input);
 
   const sourceKind: "html" | "markdown" = hasMarkdown ? "markdown" : "html";
   const content = hasMarkdown
