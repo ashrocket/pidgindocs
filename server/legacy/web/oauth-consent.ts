@@ -86,12 +86,22 @@ export interface ConsentPageInput {
   email: string;
 }
 
+// The server grants the same access whatever scope was asked for, so the
+// page always shows both fixed descriptions. Other requested names are listed
+// once each, and the fixed texts are read by their literal keys, never by a
+// requested name, so an inherited property cannot reach the page.
+function scopeItemsHtml(scope: string): string {
+  const requested = [...new Set(scope.split(/\s+/).filter(Boolean))];
+  const extra = requested.filter((name) => name !== "mcp" && name !== "offline_access");
+  const items = [SCOPE_TEXT.mcp, SCOPE_TEXT.offline_access, ...extra.map((name) => `Scope "${name}"`)];
+  return items.map((text) => `<li>${esc(text)}</li>`).join("");
+}
+
 export function oauthConsentPage(input: ConsentPageInput): Response {
-  const name = input.clientName?.trim() ? input.clientName.trim() : "An app with no name";
-  const scopes = input.scope.split(/\s+/).filter(Boolean);
-  const scopeItems = scopes
-    .map((scope) => `<li>${esc(SCOPE_TEXT[scope] ?? `Scope "${scope}"`)}</li>`)
-    .join("");
+  const name = typeof input.clientName === "string" && input.clientName.trim() !== ""
+    ? input.clientName.trim()
+    : "An app with no name";
+  const scopeItems = scopeItemsHtml(input.scope);
   return page(
     "Allow access?",
     `<h1>Allow access to your PidginDocs account?</h1>

@@ -234,3 +234,63 @@ describe("OAuth consent contract: PKCE on the token request", () => {
     expect(((await right.json()) as { access_token?: string }).access_token).toBeTruthy();
   });
 });
+
+const MCP_TEXT = "Use PidginDocs as you through its agent tools: your messages, documents and artifacts.";
+const OFFLINE_TEXT = "Stay connected after this sign-in, with a refresh token.";
+
+// Registers a client whose client_name is whatever JSON value the caller gives.
+async function registerNamed(clientName: unknown) {
+  const res = await send("/oauth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": "198.51.100.9" },
+    body: JSON.stringify({ client_name: clientName, redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" }),
+  });
+  expect(res.status).toBe(201);
+  return ((await res.json()) as { client_id: string }).client_id;
+}
+
+// The consent page for a fresh client asking for the given scope.
+async function consentHtml(scope: string, clientId?: string) {
+  const u = await makeUser("contract-page");
+  const id = clientId ?? (await registerClient("Page client"));
+  const { challenge } = await pkce();
+  const res = await send(authorizePath(id, challenge, { scope }), { headers: { ...u.cookie, "Sec-Fetch-Dest": "document" } });
+  return { status: res.status, html: await res.text() };
+}
+
+describe("OAuth consent contract: consent page text", () => {
+  it("shows a generic name when client_name is not a non-empty string", async () => {
+    for (const clientName of [42, { a: 1 }]) {
+      const { status, html } = await consentHtml("mcp", await registerNamed(clientName));
+      expect(status, JSON.stringify(clientName)).toBe(200);
+      expect(html).toContain("An app with no name");
+    }
+  });
+
+  it("renders scope names that are inherited object properties or the mcp list without a 500", async () => {
+    for (const scope of ["constructor", "__proto__", "toString mcp"]) {
+      const { status, html } = await consentHtml(scope);
+      expect(status, scope).toBe(200);
+      expect(html, scope).toContain(MCP_TEXT);
+      expect(html, scope).toContain(OFFLINE_TEXT);
+    }
+    const { html } = await consentHtml("constructor");
+    expect(html).toContain("Scope &quot;constructor&quot;");
+  });
+
+  it("always shows both fixed descriptions, whatever scope was asked for", async () => {
+    for (const scope of ["mcp", "offline_access"]) {
+      const { status, html } = await consentHtml(scope);
+      expect(status, scope).toBe(200);
+      expect(html, scope).toContain(MCP_TEXT);
+      expect(html, scope).toContain(OFFLINE_TEXT);
+    }
+  });
+
+  it("escapes markup in a requested scope name", async () => {
+    const { status, html } = await consentHtml("<b>x</b>");
+    expect(status).toBe(200);
+    expect(html).not.toContain("<b>x</b>");
+    expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
+  });
+});
