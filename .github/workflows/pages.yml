@@ -21,6 +21,9 @@ jobs:
   build:
     if: github.event_name == 'workflow_dispatch' || vars.SITE_ON_GITHUB_PAGES == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@v7
       - run: node site/check.mjs
