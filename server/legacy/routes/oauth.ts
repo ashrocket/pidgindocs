@@ -1,12 +1,17 @@
 import type { AuthedApiUser, Env } from "../types";
 import { json } from "../utils";
-import { verifyApiKey, verifySession } from "../middleware";
+import { sessionTokenFrom, verifyApiKey, verifySession } from "../middleware";
 import { loginPage } from "../web/index";
+import { oauthConsentExpiredPage, oauthConsentPage } from "../web/oauth-consent";
 import { checkRateLimit } from "../ratelimit";
 
 const AUTH_CODE_TTL = 5 * 60;
 const ACCESS_TOKEN_TTL = 60 * 60;
 const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60;
+// A sign-in that waits for Allow or Deny.
+const CONSENT_REQUEST_TTL = 10 * 60;
+// A remembered Allow lasts as long as a client registration (storeClient).
+const CONSENT_TTL = 90 * 24 * 60 * 60;
 const DEFAULT_SCOPE = "mcp";
 // Advertised so MCP clients (e.g. Claude Code) request a refresh token. The
 // token + authorize paths already pass scope through and issue refresh tokens
@@ -31,6 +36,28 @@ interface OAuthCode {
   scope: string;
   code_challenge?: string;
   code_challenge_method?: string;
+}
+
+// The /oauth/authorize parameters that a code is issued for.
+interface AuthorizeParams {
+  client_id: string;
+  redirect_uri: string;
+  scope: string;
+  state: string;
+  code_challenge?: string;
+  code_challenge_method?: string;
+}
+
+// A sign-in that waits for the user to allow or deny it. The parameters are
+// kept here, so the Allow form cannot change them. `session` is the SHA-256 of
+// the browser session that showed the consent page, and only that session can
+// send the decision. It is null for a request that the app sent with its own
+// session (see handleOAuthAuthorize); then the secret request id is the proof.
+interface ConsentRequest {
+  user_id: string;
+  email: string;
+  params: AuthorizeParams;
+  session: string | null;
 }
 
 interface OAuthTokenRecord {
@@ -97,6 +124,110 @@ async function consumeAuthCode(env: Env, code: string): Promise<OAuthCode | null
   if (!raw) return null;
   await env.SESSIONS.delete(key);
   return JSON.parse(raw) as OAuthCode;
+}
+
+async function storeConsentRequest(env: Env, request: ConsentRequest): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.SESSIONS.put(`oauth:consent-request:${id}`, JSON.stringify(request), {
+    expirationTtl: CONSENT_REQUEST_TTL,
+  });
+  return id;
+}
+
+async function readConsentRequest(env: Env, id: string): Promise<ConsentRequest | null> {
+  if (!id) return null;
+  const raw = await env.SESSIONS.get(`oauth:consent-request:${id}`);
+  return raw ? (JSON.parse(raw) as ConsentRequest) : null;
+}
+
+// Single use, as consumeAuthCode. KV has no atomic delete, so two decisions
+// sent at the same time can both pass. Each gets a code only for the same
+// user and the same parameters that the user allowed.
+async function consumeConsentRequest(env: Env, id: string): Promise<ConsentRequest | null> {
+  const request = await readConsentRequest(env, id);
+  if (request) await env.SESSIONS.delete(`oauth:consent-request:${id}`);
+  return request;
+}
+
+// Schemes that run code or show content in the browser itself. A redirect to
+// such a URI does not reach a client, so registration refuses it.
+const UNSAFE_REDIRECT_SCHEMES = new Set(["javascript:", "data:", "vbscript:", "file:", "blob:", "about:"]);
+
+// A redirect URI must be an absolute URI with no fragment (RFC 6749 3.1.2)
+// and a scheme that reaches a client: https, http, or a private app scheme.
+export function isAllowedRedirectUri(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.length > 2048) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.hash || value.includes("#")) return false;
+  if (UNSAFE_REDIRECT_SCHEMES.has(url.protocol)) return false;
+  if ((url.protocol === "http:" || url.protocol === "https:") && !url.hostname) return false;
+  return true;
+}
+
+function scopeList(scope: string): string[] {
+  return scope.split(/\s+/).filter(Boolean);
+}
+
+// The remembered Allow, per user, client and redirect URI.
+async function consentKey(userId: string, params: AuthorizeParams): Promise<string> {
+  return `oauth:consent:${userId}:${params.client_id}:${await sha256(params.redirect_uri)}`;
+}
+
+async function hasConsent(env: Env, userId: string, params: AuthorizeParams): Promise<boolean> {
+  const raw = await env.SESSIONS.get(await consentKey(userId, params));
+  if (!raw) return false;
+  const allowed = new Set(scopeList((JSON.parse(raw) as { scope: string }).scope));
+  return scopeList(params.scope).every((scope) => allowed.has(scope));
+}
+
+async function rememberConsent(env: Env, userId: string, params: AuthorizeParams): Promise<void> {
+  const key = await consentKey(userId, params);
+  const raw = await env.SESSIONS.get(key);
+  const earlier = raw ? scopeList((JSON.parse(raw) as { scope: string }).scope) : [];
+  const scope = [...new Set([...earlier, ...scopeList(params.scope)])].join(" ");
+  await env.SESSIONS.put(key, JSON.stringify({ scope, allowed_at: Date.now() }), {
+    expirationTtl: CONSENT_TTL,
+  });
+}
+
+// The consent page holds a request id. Serve it only to a top-level page
+// load, so that script on a same-origin page cannot read the id with fetch()
+// or from a frame. A browser that sends no Sec-Fetch-Dest gets the page.
+function isPageLoad(request: Request): boolean {
+  const dest = request.headers.get("Sec-Fetch-Dest");
+  return !dest || dest === "document";
+}
+
+function notPageLoad(): Response {
+  return oauthJson({ error: "invalid_request", error_description: "Open this link in a browser" }, 403);
+}
+
+async function redirectWithCode(env: Env, params: AuthorizeParams, email: string): Promise<Response> {
+  const code = crypto.randomUUID();
+  await storeAuthCode(env, code, {
+    client_id: params.client_id,
+    redirect_uri: params.redirect_uri,
+    email,
+    scope: params.scope,
+    code_challenge: params.code_challenge,
+    code_challenge_method: params.code_challenge_method,
+  });
+
+  const redirect = new URL(params.redirect_uri);
+  redirect.searchParams.set("code", code);
+  if (params.state) redirect.searchParams.set("state", params.state);
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: redirect.toString(),
+    },
+  });
 }
 
 async function storeAccessToken(env: Env, token: string, payload: OAuthTokenRecord): Promise<void> {
@@ -212,7 +343,12 @@ export async function handleOAuthRegister(
     return oauthJson({ error: "invalid_client_metadata" }, 400);
   }
 
-  if (!Array.isArray(body.redirect_uris) || body.redirect_uris.length === 0) {
+  if (
+    !Array.isArray(body.redirect_uris) ||
+    body.redirect_uris.length === 0 ||
+    body.redirect_uris.length > 10 ||
+    !body.redirect_uris.every(isAllowedRedirectUri)
+  ) {
     return oauthJson({ error: "invalid_redirect_uri" }, 400);
   }
 
@@ -275,7 +411,9 @@ export async function handleOAuthAuthorize(
     return oauthJson({ error: "unauthorized_client" }, 400);
   }
 
-  if (!client.redirect_uris.includes(redirectUri)) {
+  // Exact string match only. A client that registered before the
+  // registration check gets no redirect to an unsafe URI.
+  if (!client.redirect_uris.includes(redirectUri) || !isAllowedRedirectUri(redirectUri)) {
     return oauthJson({ error: "invalid_request", error_description: "redirect_uri does not match registered client" }, 400);
   }
 
@@ -283,26 +421,124 @@ export async function handleOAuthAuthorize(
     return oauthJson({ error: "invalid_request", error_description: "Unsupported code_challenge_method" }, 400);
   }
 
-  const code = crypto.randomUUID();
-  await storeAuthCode(env, code, {
+  const params: AuthorizeParams = {
     client_id: clientId,
     redirect_uri: redirectUri,
-    email: sessionEmail,
     scope,
+    state,
     code_challenge: codeChallenge,
     code_challenge_method: codeChallengeMethod,
-  });
+  };
 
-  const redirect = new URL(redirectUri);
-  redirect.searchParams.set("code", code);
-  if (state) redirect.searchParams.set("state", state);
+  // The user allowed this client and redirect URI before: issue the code.
+  if (await hasConsent(env, userRow.id, params)) {
+    return await redirectWithCode(env, params, sessionEmail);
+  }
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: redirect.toString(),
-    },
+  // The PidginDocs app sends its own session in a header (no cookie). It accepts
+  // only a 302 here, and it gives the Location to the system to open. Send it
+  // to a consent page that opens in the browser: /oauth/consent is not one of
+  // the app's universal link paths, so the app does not open it itself. Only
+  // a holder of the session token gets this redirect, and the request id in it
+  // is the proof for the decision.
+  if (!request.headers.get("Cookie")) {
+    const id = await storeConsentRequest(env, { user_id: userRow.id, email: sessionEmail, params, session: null });
+    return new Response(null, {
+      status: 302,
+      headers: { Location: `${url.origin}/oauth/consent?request_id=${encodeURIComponent(id)}` },
+    });
+  }
+
+  // A browser session: ask on this page. The decision must come from the
+  // same session.
+  if (!isPageLoad(request)) return notPageLoad();
+  const id = await storeConsentRequest(env, {
+    user_id: userRow.id,
+    email: sessionEmail,
+    params,
+    session: await sha256(sessionTokenFrom(request.headers) ?? ""),
   });
+  return oauthConsentPage({
+    requestId: id,
+    clientName: client.client_name,
+    redirectUri,
+    scope,
+    email: sessionEmail,
+  });
+}
+
+// GET shows the consent page for a request that the app sent. POST takes the
+// Allow or Deny from a consent page.
+export async function handleOAuthConsent(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  if (request.method === "GET") {
+    if (!isPageLoad(request)) return notPageLoad();
+    const id = new URL(request.url).searchParams.get("request_id") || "";
+    const pending = await readConsentRequest(env, id);
+    // A browser session request shows its page at /oauth/authorize only.
+    if (!pending || pending.session !== null) return oauthConsentExpiredPage();
+    const client = await loadClient(env, pending.params.client_id);
+    if (!client || !client.redirect_uris.includes(pending.params.redirect_uri)) {
+      return oauthConsentExpiredPage();
+    }
+    return oauthConsentPage({
+      requestId: id,
+      clientName: client.client_name,
+      redirectUri: pending.params.redirect_uri,
+      scope: pending.params.scope,
+      email: pending.email,
+    });
+  }
+
+  // The form posts from this origin, and a form submit is a navigation.
+  // Refuse a cross-site post and a fetch() post: script on a same-origin page
+  // must not send the decision in the background. A browser that sends no
+  // Sec-Fetch-* headers still needs the request id.
+  const site = request.headers.get("Sec-Fetch-Site");
+  if (site && site !== "same-origin") return oauthConsentExpiredPage(403);
+  const mode = request.headers.get("Sec-Fetch-Mode");
+  if (mode && mode !== "navigate") return oauthConsentExpiredPage(403);
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return oauthConsentExpiredPage();
+  }
+  const pending = await consumeConsentRequest(env, String(form.get("request_id") || ""));
+  if (!pending) return oauthConsentExpiredPage();
+
+  if (pending.session !== null) {
+    const token = sessionTokenFrom(request.headers);
+    const email = await verifySession(request.headers, env.SESSIONS);
+    if (!token || email !== pending.email || (await sha256(token)) !== pending.session) {
+      return oauthConsentExpiredPage(403);
+    }
+  }
+
+  const userRow = await env.DB.prepare(
+    "SELECT id FROM users WHERE email = ? AND status = 'active'"
+  ).bind(pending.email.toLowerCase()).first<{ id: string }>();
+  if (!userRow || userRow.id !== pending.user_id) return oauthConsentExpiredPage(403);
+
+  const { params } = pending;
+  const client = await loadClient(env, params.client_id);
+  if (!client || !client.redirect_uris.includes(params.redirect_uri)) {
+    return oauthJson({ error: "unauthorized_client" }, 400);
+  }
+
+  if (form.get("decision") !== "allow") {
+    // RFC 6749 section 4.1.2.1: the user denied the request.
+    const redirect = new URL(params.redirect_uri);
+    redirect.searchParams.set("error", "access_denied");
+    if (params.state) redirect.searchParams.set("state", params.state);
+    return new Response(null, { status: 302, headers: { Location: redirect.toString() } });
+  }
+
+  await rememberConsent(env, userRow.id, params);
+  return await redirectWithCode(env, params, pending.email);
 }
 
 async function parseTokenRequest(request: Request): Promise<Record<string, string>> {
