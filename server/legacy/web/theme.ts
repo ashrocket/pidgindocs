@@ -59,4 +59,35 @@ export const theme = {
   live: "#1763A1", // filled capsule bg, white text — the one live/actionable state
   idle: "#7C613C", // small-caps tinted label
   never: "#5E656E", // small-caps tinted label, cool quiet neutral
+
+  // Focus ring. Placeholder: same value as accent until the brand palette is confirmed.
+  focus: "#1C5FC4",
 } as const;
+
+export type Palette = Record<keyof typeof theme, string>;
+
+// CSS hex colours have 3, 4, 6 or 8 digits.
+const HEX_COLOUR = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+// Returns a full palette from a partial one, in theme order.
+// Every value is either a validated hex colour from the input or the default.
+export function resolvePalette(palette: Partial<Palette> = theme): Palette {
+  const resolved = {} as Palette;
+  for (const role of Object.keys(theme) as (keyof Palette)[]) {
+    const given: unknown = palette[role];
+    resolved[role] = typeof given === "string" && HEX_COLOUR.test(given) ? given : theme[role];
+  }
+  return resolved;
+}
+
+// Emits a palette as CSS custom properties on :root.
+// Invalid values fall back to the default in `theme`.
+export function paletteCss(palette: Partial<Palette> = theme): string {
+  const resolved = resolvePalette(palette);
+  let css = ":root{";
+  for (const role of Object.keys(theme) as (keyof Palette)[]) {
+    const name = role.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
+    css += `--c-${name}:${resolved[role]};`;
+  }
+  return css + "}";
+}
