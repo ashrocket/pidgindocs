@@ -4,6 +4,7 @@ import type { Env } from "../types";
 import { compileDesignSystem } from "../documents/design-system";
 import { BUILTIN_DESIGN_SYSTEMS } from "../documents/styles";
 import { theme } from "./theme";
+import { appShellCss, appShellHeader, libraryTabsHtml, LIBRARY_TABS_CSS, type ShellConfig } from "./app-shell";
 
 export function walkTopicPage(): Response {
   return new Response(
@@ -179,8 +180,8 @@ export function membersOnlyPage(): Response {
   );
 }
 
-export function inboxPage(messages: any[], filters: { typeFilter?: string; unreadOnly?: boolean; offset?: number; hasMore?: boolean; instanceCount?: number; pendingCount?: number; projectFilter?: string; repliedFilter?: string; sourceFilter?: string } = {}): Response {
-  const { typeFilter = "", unreadOnly = false, offset = 0, hasMore = false, instanceCount, pendingCount, projectFilter = "", repliedFilter = "", sourceFilter = "" } = filters;
+export function inboxPage(messages: any[], filters: { typeFilter?: string; unreadOnly?: boolean; offset?: number; hasMore?: boolean; instanceCount?: number; pendingCount?: number; projectFilter?: string; repliedFilter?: string; sourceFilter?: string; shell?: ShellConfig } = {}): Response {
+  const { typeFilter = "", unreadOnly = false, offset = 0, hasMore = false, instanceCount, pendingCount, projectFilter = "", repliedFilter = "", sourceFilter = "", shell } = filters;
   const unreadCount = messages.filter((m: any) => !m.read).length;
   const rows = messages
     .map(
@@ -296,9 +297,9 @@ export function inboxPage(messages: any[], filters: { typeFilter?: string; unrea
   .new-banner{display:none;position:sticky;top:0;z-index:10;background:${theme.accent};color:#fff;
     text-align:center;padding:.5rem;font-size:.85rem;font-weight:600;cursor:pointer}
   .new-banner.show{display:block}
-  .new-banner:hover{background:#a85540}
+  .new-banner:hover{background:#a85540}${shell ? `\n${appShellCss(shell.brand)}body>.app-shell{margin:-2rem -2rem 1.5rem}` : ""}
 </style></head><body>
-<div class="new-banner" id="new-banner" onclick="location.reload()">New messages — click to refresh</div>
+${shell ? appShellHeader({ brand: shell.brand, places: shell.places, menu: shell.menu, active: "inbox" }) + "\n" : ""}<div class="new-banner" id="new-banner" onclick="location.reload()">New messages — click to refresh</div>
 <div class="filter-bar" style="margin-bottom:.25rem">
   <input type="search" id="inbox-search" placeholder="Search messages…" oninput="filterRows(this.value)" style="flex:1;min-width:180px">
 </div>
@@ -318,7 +319,11 @@ export function inboxPage(messages: any[], filters: { typeFilter?: string; unrea
   <a href="/inbox?type=question&replied=false" style="font-size:.78rem;padding:.35rem .6rem;border-radius:5px;background:${theme.badgeQuestionBg};color:${theme.badgeQuestionText};font-weight:600;text-decoration:none">Pending questions${pendingCount != null && pendingCount > 0 ? ` <span style="background:${theme.badgeQuestionText};color:#fff;border-radius:9px;padding:.05rem .4rem;font-size:.7rem;font-weight:700">${pendingCount}</span>` : ""}</a>
   ${typeFilter || unreadOnly || projectFilter || repliedFilter || sourceFilter ? `<a href="/inbox" style="font-size:.78rem;color:${theme.accent}">Clear filters</a>` : ""}
 </form>
-  <div class="header">
+${shell ? `  <div class="header">
+  <h1>Inbox${messages.length > 0 && unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : ""}</h1>
+  ${unreadCount > 0 ? `<button class="mark-read-btn" onclick="markAllRead()">Mark all read</button>` : ""}
+</div>
+` : `  <div class="header">
   <h1>PidginDocs${messages.length > 0 && unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : ""}</h1>
   <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
     ${unreadCount > 0 ? `<button class="mark-read-btn" onclick="markAllRead()">Mark all read</button>` : ""}
@@ -331,7 +336,7 @@ export function inboxPage(messages: any[], filters: { typeFilter?: string; unrea
     <a href="/setup">Setup</a>
     <a href="/auth/logout">Logout</a>
   </div>
-</div>
+</div>`}
 ${
   messages.length === 0 && offset === 0
     ? '<div class="empty">No messages yet. Your Claude sessions will post here.</div>'
@@ -541,7 +546,7 @@ async function sendReply(messageId) {
   );
 }
 
-export function tocPage(docs: any[]): Response {
+export function tocPage(docs: any[], shell?: ShellConfig): Response {
   const rows = docs
     .map(
       (d: any) =>
@@ -602,13 +607,13 @@ export function tocPage(docs: any[]): Response {
   .toast{position:fixed;bottom:2rem;left:50%;transform:translateX(-50%);background:${theme.ink};
     color:${theme.sand};padding:.6rem 1.2rem;border-radius:6px;font-size:.82rem;opacity:0;
     transition:opacity .3s;pointer-events:none}
-  .toast.show{opacity:1}
+  .toast.show{opacity:1}${shell ? `\n${appShellCss(shell.brand)}${LIBRARY_TABS_CSS}body>.app-shell{margin:-2rem -2rem 1.5rem}.header{display:block}.library-tabs{margin:0 0 1rem -10px}` : ""}
 </style></head><body>
-<div class="header">
+${shell ? appShellHeader({ brand: shell.brand, places: shell.places, menu: shell.menu, active: "library" }) + `\n<div class="header">\n  ${libraryTabsHtml("", "documents")}\n  <h1>Documents</h1>\n</div>\n` : `<div class="header">
   <h1>Documents</h1>
   <div class="header-links"><a href="/inbox">Inbox</a><a href="/workspace">Workspace</a><a href="/commute">Commute</a><a href="/profile">Profile</a><a href="/setup">Setup</a><a href="/auth/logout">Logout</a></div>
 </div>
-${
+`}${
   docs.length === 0
     ? '<div class="empty">No documents yet.</div>'
     : rows
