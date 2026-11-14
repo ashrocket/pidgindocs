@@ -5,8 +5,9 @@ This folder holds the static website for PidginCore. It has no accounts, no scri
 ## Layout
 
 - `public/` holds the pages, the style sheet and the images.
-- `public/_headers` sets the security headers for every page.
-- `wrangler.jsonc` configures a Cloudflare Worker that serves `public/` and nothing else.
+- `public/_headers` sets the security headers for the Cloudflare Worker deployment only.
+- `wrangler.jsonc` configures the Cloudflare Worker deployment. It serves `public/` and nothing else.
+- `.github/workflows/pages.yml` publishes `public/` to GitHub Pages.
 - `check.mjs` checks the pages. See "Check the site" below.
 
 ## Preview the site
@@ -38,6 +39,24 @@ The GitHub workflow `Verify` runs this check.
 ## Deploy
 
 **Do not deploy this site without the approval of the project owner.**
+
+### GitHub Pages
+
+The owner publishes the site on GitHub Pages with these steps, in order:
+
+1. Wait until the older hosted app no longer serves pidgindocs.com.
+2. In the repository settings, set Pages to build from GitHub Actions.
+3. Run the Site workflow by hand once. Check that the run succeeds. Until step 4, GitHub publishes the site below `ashrocket.github.io/pidgindocs/`. The links start at the site root, so the pages have no style and the links fail at that address. That is correct.
+4. In the Pages settings, set the custom domain to pidgindocs.com. A CNAME file is not used when Pages publishes from a workflow.
+5. In Cloudflare DNS, point the apex at GitHub Pages as GitHub's custom domain documentation describes. Add a `www` CNAME record to `ashrocket.github.io`.
+6. Turn on Enforce HTTPS. GitHub must issue a certificate first. This can take some time, and a proxied Cloudflare record can delay it.
+7. Set the repository variable `SITE_ON_GITHUB_PAGES` to `true`. Later pushes to `site/` then publish by themselves.
+
+GitHub Pages does not read `_headers`. The Content Security Policy and the other headers in that file are not sent there. If the DNS record is proxied through Cloudflare, a response header rule can add them back.
+
+### Cloudflare Worker
+
+This is the earlier way to serve the site. It stays available.
 
 Today, `pidgindocs.com` serves an older hosted app. The route in `wrangler.jsonc` is a Custom Domain for `pidgindocs.com`. A deploy makes this Worker the one that serves that name. The older app stops serving it.
 
