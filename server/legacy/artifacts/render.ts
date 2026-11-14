@@ -196,7 +196,7 @@ function mermaidBlock(force: "light" | "dark" | null): string {
       : force === "dark"
         ? "true"
         : "t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)";
-  return `<script src="/a/assets/mermaid.js" crossorigin="anonymous" defer></script>
+  return `<script src="/a/assets/mermaid.js?v=${ASSET_VERSION}" crossorigin="anonymous" defer></script>
 <script>
 addEventListener('DOMContentLoaded', function () {
   if (!window.mermaid) return;
@@ -208,8 +208,12 @@ addEventListener('DOMContentLoaded', function () {
 </script>`;
 }
 
+// Added to the script URLs so a browser does not reuse a copy it cached before
+// these assets sent CORS headers. Raise it when their headers or contract change.
+const ASSET_VERSION = "2";
+
 function runtimeBlock(artifactId: string, token?: string, origin?: string): string {
-  return `<script src="/a/assets/runtime.js" crossorigin="anonymous" defer data-artifact-id="${escapeHtml(artifactId)}" data-runtime-token="${escapeHtml(token || "")}" data-runtime-origin="${escapeHtml(origin || "")}"></script>`;
+  return `<script src="/a/assets/runtime.js?v=${ASSET_VERSION}" crossorigin="anonymous" defer data-artifact-id="${escapeHtml(artifactId)}" data-runtime-token="${escapeHtml(token || "")}" data-runtime-origin="${escapeHtml(origin || "")}"></script>`;
 }
 
 function embedResizeBlock(artifactId: string, version: number, nonce: string, parentOrigin: string): string {
