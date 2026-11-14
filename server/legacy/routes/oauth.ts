@@ -417,8 +417,25 @@ export async function handleOAuthAuthorize(
     return oauthJson({ error: "invalid_request", error_description: "redirect_uri does not match registered client" }, 400);
   }
 
-  if (codeChallengeMethod && codeChallengeMethod !== "S256") {
-    return oauthJson({ error: "invalid_request", error_description: "Unsupported code_challenge_method" }, 400);
+  // PKCE with S256 is required for every client. Checked before a consent
+  // request is stored, a remembered consent is used or a code is issued, so a
+  // refused request leaves nothing behind.
+  if (!codeChallenge) {
+    return oauthJson({ error: "invalid_request", error_description: "code_challenge is required (PKCE S256)" }, 400);
+  }
+  if (codeChallengeMethod !== "S256") {
+    return oauthJson({
+      error: "invalid_request",
+      error_description: codeChallengeMethod
+        ? "Unsupported code_challenge_method (only S256)"
+        : "code_challenge_method is required (S256)",
+    }, 400);
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) {
+    return oauthJson({
+      error: "invalid_request",
+      error_description: "code_challenge must be 43 base64url characters (unpadded SHA-256)",
+    }, 400);
   }
 
   const params: AuthorizeParams = {
@@ -603,14 +620,17 @@ export async function handleOAuthToken(
       return oauthJson({ error: "invalid_grant" }, 400);
     }
 
-    if (authCode.code_challenge) {
-      if (!verifier) {
-        return oauthJson({ error: "invalid_grant", error_description: "code_verifier required" }, 400);
-      }
-      const expected = await sha256(verifier);
-      if (expected !== authCode.code_challenge) {
-        return oauthJson({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
-      }
+    // PKCE is mandatory. A code with no challenge (issued before this was
+    // required) cannot be exchanged.
+    if (!authCode.code_challenge) {
+      return oauthJson({ error: "invalid_grant", error_description: "code has no PKCE challenge" }, 400);
+    }
+    if (!verifier) {
+      return oauthJson({ error: "invalid_grant", error_description: "code_verifier required" }, 400);
+    }
+    const expected = await sha256(verifier);
+    if (expected !== authCode.code_challenge) {
+      return oauthJson({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
     }
 
     const tokens = await issueTokens(env, {
