@@ -31,6 +31,7 @@ import {
 } from "../artifacts/store";
 import { MAX_ARTIFACT_BYTES } from "../artifacts/render";
 import { artifactCsp, designSystemStyleBlock, wrapArtifactHtml } from "../artifacts/render";
+import { issueArtifactRuntimeToken, resolveArtifactRuntimeUser } from "../artifacts/runtime-auth";
 import { addReaderUi } from "../web/reader-ui";
 import { getDesignSystem } from "../design-systems";
 import { compileDesignSystem } from "../documents/design-system";
@@ -552,6 +553,10 @@ export async function handleServeArtifact(
     }
   }
 
+  // The page runs in an opaque origin and cannot send the session cookie, so a
+  // signed-in viewer's page gets a short-lived token bound to this artifact.
+  const runtimeViewer = hasCapabilities ? await resolveCallerUserId(request, env) : null;
+  const runtimeToken = runtimeViewer ? await issueArtifactRuntimeToken(env, id, runtimeViewer) : undefined;
   const artifactHtml = wrapArtifactHtml({
     content,
     title: row.title,
@@ -559,6 +564,8 @@ export async function handleServeArtifact(
     artifactId: id,
     sourceKind: row.source_kind,
     hasCapabilities,
+    runtimeToken,
+    runtimeOrigin: url.origin,
     designSystemCss,
     embed:
       isEmbed && embedNonce
@@ -580,14 +587,21 @@ export async function handleServeArtifact(
       "Content-Type": "text/html; charset=utf-8",
       "Content-Security-Policy": artifactCsp(
         hasCapabilities,
-        isEmbed ? new URL(env.WORKER_URL).origin : "'none'"
+        isEmbed ? new URL(env.WORKER_URL).origin : "'none'",
+        url.origin,
+        id
       ),
       "Referrer-Policy": "no-referrer",
+      // Keep this page out of any browsing context group that holds an opener
+      // reference to another origin.
+      "Cross-Origin-Opener-Policy": "same-origin",
       // Latest must stay fresh (artifacts update in place). A pinned version's
       // CONTENT is immutable, but the served page is not: the artifact-level
       // design_system (and the style it names) can change under it, so pinned
       // responses get a bounded max-age instead of a day.
-      "Cache-Control": isEmbed
+      // A capability page carries a per-viewer runtime token, so no cache may
+      // keep it. Embeds were already never stored.
+      "Cache-Control": isEmbed || hasCapabilities
         ? "private, no-store"
         : isPinned
           ? isPublic
@@ -601,7 +615,16 @@ export async function handleServeArtifact(
   });
 }
 
-// --- Same-origin assets (the CSP allows 'self' but no external hosts) ---
+// --- Same-origin assets (the CSP allows this host's /a/assets/ path but no external hosts) ---
+
+// Artifact pages run in an opaque origin and load these scripts with
+// crossorigin="anonymous", so the responses must allow any origin.
+const SCRIPT_HEADERS = {
+  "Content-Type": "text/javascript",
+  "Access-Control-Allow-Origin": "*",
+  "Cross-Origin-Resource-Policy": "cross-origin",
+  "Cache-Control": "public, max-age=604800, immutable",
+};
 
 const MERMAID_VERSION = "11.4.1";
 const MERMAID_R2_KEY = `assets/mermaid-${MERMAID_VERSION}.min.js`;
@@ -631,12 +654,7 @@ export async function handleArtifactMermaid(_request: Request, env: Env): Promis
       httpMetadata: { contentType: "text/javascript" },
     }).catch(() => {});
   }
-  return new Response(source, {
-    headers: {
-      "Content-Type": "text/javascript",
-      "Cache-Control": "public, max-age=604800, immutable",
-    },
-  });
+  return new Response(source, { headers: SCRIPT_HEADERS });
 }
 
 const CUELUME_VERSION = "0.1.2";
@@ -682,12 +700,15 @@ const RUNTIME_JS = `(function () {
   var script = document.currentScript;
   var artifactId = script && script.dataset.artifactId;
   if (!artifactId) return;
-  var base = '/api/artifacts/' + artifactId + '/rt';
+  var token = script.dataset.runtimeToken;
+  var origin = script.dataset.runtimeOrigin;
+  var base = origin + '/api/artifacts/' + artifactId + '/rt';
   function call(path, body) {
+    if (!token) return Promise.reject(new Error('Sign in and reopen this artifact to use its connected features.'));
     return fetch(base + path, {
       method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'PidginArtifact ' + token },
       body: JSON.stringify(body || {})
     }).then(function (res) { return res.json(); }).then(function (data) {
       if (!data.ok) throw new Error(data.error || 'runtime call failed');
@@ -720,6 +741,8 @@ export function handleArtifactRuntimeScript(): Response {
   return new Response(RUNTIME_JS, {
     headers: {
       "Content-Type": "text/javascript",
+      "Access-Control-Allow-Origin": "*",
+      "Cross-Origin-Resource-Policy": "cross-origin",
       "Cache-Control": "public, max-age=3600",
     },
   });
@@ -738,15 +761,15 @@ function capabilitiesOf(row: ArtifactRow): Record<string, unknown> {
 }
 
 // POST /api/artifacts/:id/rt/complete — window.pidgin.complete(prompt).
-// Requires a signed-in viewer (session or API key); proxied through the
+// Requires the runtime token the artifact page was served with; proxied through the
 // server's ANTHROPIC_API_KEY so no key ever reaches the page.
 export async function handleArtifactRuntimeComplete(
   request: Request,
   env: Env,
   id: string
 ): Promise<Response> {
-  const userId = await resolveCallerUserId(request, env);
-  if (!userId) return unauthorized("sign in to use this artifact's AI features");
+  const userId = await resolveArtifactRuntimeUser(request, env, id);
+  if (!userId) return unauthorized("This artifact connection expired. Reopen the artifact to continue.");
 
   const row = await getArtifactById(env, id);
   // Same 404-flavored message for missing and foreign — no existence leak,
@@ -811,8 +834,8 @@ export async function handleArtifactRuntimeStorage(
   env: Env,
   id: string
 ): Promise<Response> {
-  const userId = await resolveCallerUserId(request, env);
-  if (!userId) return unauthorized("sign in to use this artifact's storage");
+  const userId = await resolveArtifactRuntimeUser(request, env, id);
+  if (!userId) return unauthorized("This artifact connection expired. Reopen the artifact to continue.");
 
   const row = await getArtifactById(env, id);
   // Same ownership/visibility gate as rt/complete — without it, any signed-in

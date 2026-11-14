@@ -196,7 +196,7 @@ function mermaidBlock(force: "light" | "dark" | null): string {
       : force === "dark"
         ? "true"
         : "t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)";
-  return `<script src="/a/assets/mermaid.js" defer></script>
+  return `<script src="/a/assets/mermaid.js" crossorigin="anonymous" defer></script>
 <script>
 addEventListener('DOMContentLoaded', function () {
   if (!window.mermaid) return;
@@ -208,8 +208,8 @@ addEventListener('DOMContentLoaded', function () {
 </script>`;
 }
 
-function runtimeBlock(artifactId: string): string {
-  return `<script src="/a/assets/runtime.js" defer data-artifact-id="${escapeHtml(artifactId)}"></script>`;
+function runtimeBlock(artifactId: string, token?: string, origin?: string): string {
+  return `<script src="/a/assets/runtime.js" crossorigin="anonymous" defer data-artifact-id="${escapeHtml(artifactId)}" data-runtime-token="${escapeHtml(token || "")}" data-runtime-origin="${escapeHtml(origin || "")}"></script>`;
 }
 
 function embedResizeBlock(artifactId: string, version: number, nonce: string, parentOrigin: string): string {
@@ -249,6 +249,10 @@ export interface WrapArtifactInput {
   artifactId: string;
   sourceKind: "html" | "markdown";
   hasCapabilities: boolean;
+  /** Short-lived credential the runtime script sends to /api/artifacts/:id/rt/*; see runtime-auth.ts. */
+  runtimeToken?: string;
+  /** Origin of the page; the runtime script reads its API from here. */
+  runtimeOrigin?: string;
   // Prebuilt designSystemStyleBlock() output for the artifact's declared
   // style; injected right after the reset so authored CSS still wins.
   designSystemCss?: string;
@@ -259,16 +263,19 @@ export interface WrapArtifactInput {
   };
 }
 
-// The strict artifact CSP: zero external hosts. 'self' is allowed so this
-// worker origin can supply the mermaid + runtime scripts — the same trust
-// model as claudeusercontent.com hosting Claude's renderers. connect-src
-// opens to 'self' ONLY for capability-declaring artifacts, whose runtime
-// calls are answered exclusively by /api/artifacts/:id/rt/*.
-export function artifactCsp(hasCapabilities: boolean, frameAncestor = "'none'"): string {
+// The strict artifact CSP: zero external hosts, and the page runs in an opaque
+// origin (the sandbox directive has no allow-same-origin), so authored script
+// can read neither the app's cookies nor its storage. Scripts may load only from
+// this deployment's /a/assets/ path (mermaid and the runtime). connect-src opens
+// ONLY for capability-declaring artifacts, and then only to that artifact's own
+// /api/artifacts/:id/rt/ path, which answers to the runtime token, not a cookie.
+export function artifactCsp(hasCapabilities: boolean, frameAncestor = "'none'", origin?: string, artifactId?: string): string {
+  const assets = origin ? `${origin}/a/assets/` : "'self'";
+  const runtime = hasCapabilities && origin && artifactId ? `${origin}/api/artifacts/${encodeURIComponent(artifactId)}/rt/` : "'none'";
   return (
-    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: blob:; font-src data:; media-src data: blob:; " +
-    `connect-src ${hasCapabilities ? "'self'" : "'none'"}; form-action 'none'; base-uri 'none'; ` +
+    `sandbox allow-scripts allow-downloads; default-src 'none'; script-src ${assets} 'unsafe-inline'; style-src 'unsafe-inline'; ` +
+    "img-src data: blob:; font-src data:; media-src data: blob:; " +
+    `connect-src ${runtime}; form-action 'none'; base-uri 'none'; object-src 'none'; ` +
     `frame-ancestors ${frameAncestor}`
   );
 }
@@ -296,7 +303,7 @@ export function wrapArtifactHtml(input: WrapArtifactInput): string {
   const needsMermaid = contentNeedsMermaid(input.content);
   const tail =
     (needsMermaid ? mermaidBlock(mermaidForce) : "") +
-    (input.hasCapabilities ? runtimeBlock(input.artifactId) : "") +
+    (input.hasCapabilities ? runtimeBlock(input.artifactId, input.runtimeToken, input.runtimeOrigin) : "") +
     (input.embed
       ? embedResizeBlock(
           input.artifactId,
