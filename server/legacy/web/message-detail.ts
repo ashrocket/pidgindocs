@@ -175,7 +175,7 @@ async function renderArtifactBlock(
   </button>
   <div class="artifact-content">
     <div class="artifact-loading">Loading visualization…</div>
-    <iframe title="${esc(title)} — ${esc(block.summary)}" loading="lazy" sandbox="allow-scripts allow-same-origin" src="${esc(embedUrl.toString())}"></iframe>
+    <iframe title="${esc(title)} — ${esc(block.summary)}" loading="lazy" sandbox="allow-scripts allow-downloads" src="${esc(embedUrl.toString())}"></iframe>
   </div>
   <p class="artifact-summary fallback">${esc(block.summary)}</p>
   <footer><span>Snapshot v${version}</span>${update}<button class="retry-artifact" type="button" onclick="retryArtifact('${id}')">Try again</button><a class="open-artifact" href="${fullUrl}" onclick="recordOpen('${esc(artifactId)}')">Open full screen</a></footer>
@@ -239,7 +239,7 @@ function markArtifactFailed(frame){var el=frame.closest('.artifact-block');if(!e
 function armArtifactFrame(frame){var previous=failureTimers.get(frame);if(previous)clearTimeout(previous);failureTimers.set(frame,setTimeout(function(){markArtifactFailed(frame);},12000));}
 function retryArtifact(id){var el=document.getElementById(id);var frame=el&&el.querySelector('iframe');if(!frame)return;el.classList.remove('failed','loaded');delete el.dataset.failedRecorded;delete el.dataset.loadedRecorded;frame.src=frame.src;armArtifactFrame(frame);}
 addEventListener('message',function(event){
-  var d=event.data||{};if(!embedOrigin||event.origin!==embedOrigin||d.type!=='pidgin:artifact-size')return;
+  var d=event.data||{};if(!embedOrigin||event.origin!=='null'||d.type!=='pidgin:artifact-size')return;
   var el=document.querySelector('[data-artifact-id="'+CSS.escape(String(d.artifactId))+'"][data-version="'+Number(d.version)+'"]');if(!el||el.dataset.nonce!==d.nonce)return;
   var frame=el.querySelector('iframe');if(!frame||event.source!==frame.contentWindow)return;
   var timer=failureTimers.get(frame);if(timer)clearTimeout(timer);var height=Math.max(180,Math.min(560,Number(d.height)||240));frame.style.height=height+'px';el.classList.remove('failed');el.classList.add('loaded');if(el.dataset.loadedRecorded!=='true'){el.dataset.loadedRecorded='true';telemetry(String(d.artifactId),'loaded',Math.round(performance.now()-started));}
