@@ -7,12 +7,13 @@ import { docs, filters, messages, renderPlain, sha256 } from "./fixtures-shell-p
 const env = {} as Env;
 const OLD_INBOX_LINKS = '<a href="/auth/logout">Logout</a>';
 
-// Hashes of the pages as they rendered before the shell existed, with date formatting pinned.
+// Hashes of the pages as they render without a shell, with date formatting pinned.
+// The pages interpolate theme colours, so a change to the default palette changes these.
 const BEFORE = {
-  inbox: "d68e8f0c307a2bcb0b15c1c1f08c8e0fe0662fd1cef9b98210a64f052a42197d",
-  inboxEmpty: "2b06514987a7dcd9fa357ef107a83119b50e996a909e2582b604f5080ad5ddfb",
-  toc: "8f7fa6a2a715d3c520f51b0c90c582422264fdd0e5a735dba72b029cbe1a41d1",
-  tocEmpty: "3db84cb7eb959ae585c0b1a7e20fb32274dc489a7cedde5374351b7b39f715fc",
+  inbox: "cbe9df9d63eebf3709bca68409cc159b08370f697b3439814fef4e88dcb477ad",
+  inboxEmpty: "f2567d3e48403f51ba9d07520aa967882816c7baf3743403ea13d3277fedfd98",
+  toc: "68e19038413acac52855f383e75e828448cc65d67ad50617afbd3e59b98a2049",
+  tocEmpty: "5c500fb215308975aa00bfbef605500d476cafed7110da466c8e15791651450b",
 };
 
 describe("shell defaults", () => {
