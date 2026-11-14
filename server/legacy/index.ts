@@ -107,6 +107,7 @@ import { commutePage, inboxPage, loginPage, membersOnlyPage, registryPage, setup
 import { homePage } from "./web/home";
 import { replyHelpPage } from "./web/help";
 import { appIconAsset } from "./web/app-icon";
+import { shell } from "./web/shell";
 import { adminUsersPage } from "./web/admin-users";
 import { messageDetailPage, type MessageDetailRow } from "./web/message-detail";
 import { workspacePage } from "./web/workspace";
@@ -1080,7 +1081,7 @@ export default {
             (block) => block.type === "artifact"
           ).length;
         }
-        return inboxPage(messages, { typeFilter, projectFilter, sourceFilter, unreadOnly, repliedFilter: repliedParam || "", offset: inboxOffset, hasMore, instanceCount: instanceRow?.count ?? 0, pendingCount: pendingRow?.count ?? 0 });
+        return inboxPage(messages, { typeFilter, projectFilter, sourceFilter, unreadOnly, repliedFilter: repliedParam || "", offset: inboxOffset, hasMore, instanceCount: instanceRow?.count ?? 0, pendingCount: pendingRow?.count ?? 0, shell: shell(env, {}) });
       }
 
       // Documents TOC (session auth required)
@@ -1090,7 +1091,7 @@ export default {
         const docs = await env.DB.prepare(
           "SELECT * FROM messages WHERE type = 'document' AND (doc_key IS NOT NULL OR body IS NOT NULL) AND user_id = ? ORDER BY created_at DESC"
         ).bind(userId).all();
-        return tocPage(docs.results);
+        return tocPage(docs.results, shell(env, {}));
       }
       // Artifacts gallery (session auth required)
       if (path === "/artifacts" && method === "GET") {
