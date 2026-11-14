@@ -1,67 +1,67 @@
-// PidginDocs web design tokens — Swiss-airmail palette (2026 rebrand).
+// PidginDocs web design tokens: the original palette. Moss green for actions,
+// terra orange for attention, brown ink on cream.
 //
-// Single source of truth for the app's own chrome. Page functions should
-// import `theme` and interpolate `${theme.ink}` etc. into their
-// template-literal HTML/CSS instead of hardcoding hex literals.
+// This object is the default Palette. Page functions import `theme` and
+// interpolate `${theme.ink}` and so on instead of hardcoding hex literals;
+// another edition supplies its own values through resolvePalette and paletteCss.
 //
-// Every hex here is identical, role for role, to final-tokens.md §2a (web)
-// and, for the 11 semantic roles, to final-tokens.md §1a (Swift) — do not
-// let these drift apart. See final-tokens.md for the full rationale,
-// contrast verification, and OLD_HEX -> theme.KEY migration table.
+// Every text role keeps 4.5:1 on each surface and on its own tinted
+// background, and the focus ring keeps 3:1 on each surface.
+// server/legacy/__tests__/theme-contrast.test.ts enforces both.
 
 export const theme = {
   // Text
-  ink: "#102335", // primary text
-  muted: "#405A77", // secondary text (Swift inkSoft)
-  dim: "#6D6555", // tertiary/metadata text — the AA floor (Swift inkMute/brass)
+  ink: "#2B1F18", // primary text
+  muted: "#6B5446", // secondary text
+  dim: "#726154", // tertiary and metadata text, the AA floor
 
   // Surfaces
-  paper: "#FBF7EF", // card/panel background (= anchor paper)
-  sand: "#F3ECDF", // page background (= anchor cream)
-  surface: "#FEFCF7", // lightest surface (Swift `cream`)
-  line: "#C6BCA9", // borders, decorative strokes — chrome only, never text
-  borderLight: "#DEDBD3", // lighter form-input borders
+  paper: "#F7ECDB", // card and panel background
+  sand: "#F0E1CF", // page background
+  surface: "#FAF4E8", // lightest surface
+  line: "#E0CDB4", // borders and decorative strokes, never text
+  borderLight: "#E8D7C2", // lighter form-input borders
 
   // Primary action (fills/borders only — never inline text)
-  primary: "#082F5A", // buttons, primary fills (= anchor navy, Swift moss)
-  primaryDeep: "#062648", // pressed/hover state (Swift mossDeep)
+  primary: "#5A6B3A", // buttons and primary fills, never inline text
+  primaryDeep: "#3D4A22", // pressed and hover state
 
   // Accent / link (inline text only — never a button fill)
-  accent: "#1C5FC4", // "more" links, unread-row left border, inline links (Swift sky)
+  accent: "#48687E", // inline links and the unread-row border, never a button fill
 
   // Attention (routine, non-alarm — waiting states, "Required" markers)
-  attention: "#96462C", // Swift terra
-  attentionDeep: "#703421", // Swift terraDeep
-  attentionBg: "#F1E5DC", // tinted background for the "Required" badge
+  attention: "#A64724", // waiting states and "Required" markers
+  attentionDeep: "#8E3818",
+  attentionBg: "#F6E1D4", // tinted background for the "Required" badge
 
   // Notice
-  notice: "#8F531E", // Swift amber
-  noticeBg: "#F0E7DA",
+  notice: "#915616",
+  noticeBg: "#F5E6CC",
 
-  // Error / urgent (the only role drawn from anchor red for routine, non-icon use)
-  error: "#7E2E25",
-  errorBg: "#EEE3DB",
+  // Error / urgent
+  error: "#8E3818",
+  errorBg: "#F4DDD2",
 
   // Badges — one bg/text pair per message type + the answered variant,
-  // each independently contrast-checked against its own bg (§3)
-  badgeMessageBg: "#E3E3E0",
-  badgeMessageText: "#082F5A",
-  badgeQuestionBg: "#EFE8D9",
-  badgeQuestionText: "#825D17",
-  badgeDocumentBg: "#E6E8E3",
-  badgeDocumentText: "#2D5E76",
-  badgeStatusBg: "#E9E8E4",
-  badgeStatusText: "#476185",
-  badgeAnsweredBg: "#E7E9E6",
-  badgeAnsweredText: "#306791",
+  // each independently contrast-checked against its own bg
+  badgeMessageBg: "#E8DCC8",
+  badgeMessageText: "#2B1F18",
+  badgeQuestionBg: "#F3E3C8",
+  badgeQuestionText: "#7A4A0E",
+  badgeDocumentBg: "#DFE6EA",
+  badgeDocumentText: "#33566E",
+  badgeStatusBg: "#E0CDB4",
+  badgeStatusText: "#5A4638",
+  badgeAnsweredBg: "#D4DFD0",
+  badgeAnsweredText: "#3D4A22",
 
   // Reply-state indicators
-  live: "#1763A1", // filled capsule bg, white text — the one live/actionable state
-  idle: "#7C613C", // small-caps tinted label
-  never: "#5E656E", // small-caps tinted label, cool quiet neutral
+  live: "#4F6645", // filled capsule, white text: the one live state
+  idle: "#746337", // small-caps tinted label
+  never: "#726154", // small-caps quiet label
 
-  // Focus ring. Placeholder: same value as accent until the brand palette is confirmed.
-  focus: "#1C5FC4",
+  // Focus ring
+  focus: "#C8552B", // focus ring
 } as const;
 
 export type Palette = Record<keyof typeof theme, string>;
