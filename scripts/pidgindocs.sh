@@ -720,7 +720,7 @@ cmd_urgent() {
 
 cmd_mark_all_read() {
   local result
-  result=$(curl -s -X POST "$PIDGINDOCS_URL/api/messages/mark-all-read" \
+  result=$(curl -s -X PATCH "$PIDGINDOCS_URL/api/messages/read-all" \
     -H "Authorization: Bearer $PIDGINDOCS_API_KEY")
   local ok
   ok=$(echo "$result" | jq -r '.ok')
