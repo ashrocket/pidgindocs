@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { paletteCss, resolvePalette, theme, type Palette } from "../web/theme";
 
-const HEX = /^#[0-9a-fA-F]{3,8}$/;
+const HEX = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const roles = Object.keys(theme) as (keyof Palette)[];
 const kebab = (role: string) => role.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
 const decl = (role: keyof Palette, value: string) => `--c-${kebab(role)}:${value};`;
@@ -43,6 +43,8 @@ describe("palette contract", () => {
   it.each([
     "red;}body{display:none",
     "#12",
+    "#12345",
+    "#1234567",
     "#123456789",
     "rgb(0,0,0)",
     "",

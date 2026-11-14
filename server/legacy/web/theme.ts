@@ -66,7 +66,8 @@ export const theme = {
 
 export type Palette = Record<keyof typeof theme, string>;
 
-const HEX_COLOUR = /^#[0-9a-fA-F]{3,8}$/;
+// CSS hex colours have 3, 4, 6 or 8 digits.
+const HEX_COLOUR = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 // Returns a full palette from a partial one, in theme order.
 // Every value is either a validated hex colour from the input or the default.
