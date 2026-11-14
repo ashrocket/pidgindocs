@@ -86,6 +86,7 @@ import { handleRcCommand, handleRcPoll, handleRcSubmitResult, handleRcGetResult,
 import {
   handleOAuthAuthorizationServerMetadata,
   handleOAuthAuthorize,
+  handleOAuthConsent,
   handleOAuthProtectedResourceMetadata,
   handleOAuthRegister,
   handleOAuthToken,
@@ -272,6 +273,9 @@ export default {
       }
       if (path === "/oauth/authorize" && method === "GET") {
         return await handleOAuthAuthorize(request, env);
+      }
+      if (path === "/oauth/consent" && (method === "GET" || method === "POST")) {
+        return await handleOAuthConsent(request, env);
       }
       if (path === "/oauth/token" && method === "POST") {
         return await handleOAuthToken(request, env);

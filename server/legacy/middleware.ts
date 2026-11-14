@@ -48,22 +48,26 @@ async function lookupSession(
   return value;
 }
 
-export async function verifySession(
-  headers: Headers,
-  sessions: KVNamespace
-): Promise<string | null> {
+// The session token that verifySession reads: the "session" cookie when the
+// request has a Cookie header, otherwise the app's "Authorization: Session"
+// header.
+export function sessionTokenFrom(headers: Headers): string | null {
   const cookie = headers.get("Cookie");
   if (!cookie) {
     // Also check Authorization header for app-based auth
     const auth = headers.get("Authorization");
-    if (auth?.startsWith("Session ")) {
-      return lookupSession(sessions, auth.slice(8));
-    }
-    return null;
+    return auth?.startsWith("Session ") ? auth.slice(8) : null;
   }
   const match = cookie.match(/session=([^;]+)/);
-  if (!match) return null;
-  return lookupSession(sessions, match[1]);
+  return match ? match[1] : null;
+}
+
+export async function verifySession(
+  headers: Headers,
+  sessions: KVNamespace
+): Promise<string | null> {
+  const token = sessionTokenFrom(headers);
+  return token ? lookupSession(sessions, token) : null;
 }
 
 export function unauthorized(message = "unauthorized"): Response {
