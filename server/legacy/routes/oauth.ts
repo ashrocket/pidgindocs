@@ -149,12 +149,12 @@ async function consumeConsentRequest(env: Env, id: string): Promise<ConsentReque
   return request;
 }
 
-// Schemes that run code or show content in the browser itself. A redirect to
-// such a URI does not reach a client, so registration refuses it.
-const UNSAFE_REDIRECT_SCHEMES = new Set(["javascript:", "data:", "vbscript:", "file:", "blob:", "about:"]);
+// Hostnames as URL parses them; IPv6 keeps its brackets.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// A redirect URI must be an absolute URI with no fragment (RFC 6749 3.1.2)
-// and a scheme that reaches a client: https, http, or a private app scheme.
+// A redirect URI must be an absolute URI with no fragment (RFC 6749 3.1.2),
+// no userinfo, and either https or http on the loopback host (RFC 8252 7.3).
+// Private app schemes are refused: any app on a device can claim one.
 export function isAllowedRedirectUri(value: unknown): value is string {
   if (typeof value !== "string" || !value || value.length > 2048) return false;
   let url: URL;
@@ -164,9 +164,10 @@ export function isAllowedRedirectUri(value: unknown): value is string {
     return false;
   }
   if (url.hash || value.includes("#")) return false;
-  if (UNSAFE_REDIRECT_SCHEMES.has(url.protocol)) return false;
-  if ((url.protocol === "http:" || url.protocol === "https:") && !url.hostname) return false;
-  return true;
+  if (url.username || url.password) return false;
+  if (url.protocol === "https:") return url.hostname !== "";
+  if (url.protocol === "http:") return LOOPBACK_HOSTS.has(url.hostname);
+  return false;
 }
 
 function scopeList(scope: string): string[] {
@@ -349,7 +350,10 @@ export async function handleOAuthRegister(
     body.redirect_uris.length > 10 ||
     !body.redirect_uris.every(isAllowedRedirectUri)
   ) {
-    return oauthJson({ error: "invalid_redirect_uri" }, 400);
+    return oauthJson({
+      error: "invalid_redirect_uri",
+      error_description: "Each redirect URI must use https, or http on localhost, 127.0.0.1 or [::1], with no fragment or userinfo. At most 10 are allowed.",
+    }, 400);
   }
 
   const authMethod = body.token_endpoint_auth_method || "none";
@@ -497,7 +501,7 @@ export async function handleOAuthConsent(
     // A browser session request shows its page at /oauth/authorize only.
     if (!pending || pending.session !== null) return oauthConsentExpiredPage();
     const client = await loadClient(env, pending.params.client_id);
-    if (!client || !client.redirect_uris.includes(pending.params.redirect_uri)) {
+    if (!client || !client.redirect_uris.includes(pending.params.redirect_uri) || !isAllowedRedirectUri(pending.params.redirect_uri)) {
       return oauthConsentExpiredPage();
     }
     return oauthConsentPage({
@@ -542,7 +546,7 @@ export async function handleOAuthConsent(
 
   const { params } = pending;
   const client = await loadClient(env, params.client_id);
-  if (!client || !client.redirect_uris.includes(params.redirect_uri)) {
+  if (!client || !client.redirect_uris.includes(params.redirect_uri) || !isAllowedRedirectUri(params.redirect_uri)) {
     return oauthJson({ error: "unauthorized_client" }, 400);
   }
 
