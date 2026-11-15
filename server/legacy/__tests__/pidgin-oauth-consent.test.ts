@@ -357,11 +357,12 @@ describe("OAuth consent: redirect URIs and background posts", () => {
       headers: { "Content-Type": "application/json", "CF-Connecting-IP": "198.51.100.8" },
       body: JSON.stringify({ client_name: "Redirects", redirect_uris: redirectUris }),
     });
-    // Claude Code (loopback), claude.ai (https) and a native app scheme.
-    for (const uri of ["http://localhost:33418/callback", "https://claude.ai/api/mcp/auth_callback", "cursor://anysphere.cursor-retrieval/oauth/callback"]) {
+    // Claude Code (loopback) and claude.ai (https).
+    for (const uri of ["http://localhost:33418/callback", "https://claude.ai/api/mcp/auth_callback"]) {
       expect((await register([uri])).status, uri).toBe(201);
     }
     for (const uri of [
+      "cursor://anysphere.cursor-retrieval/oauth/callback",
       "javascript:alert(document.domain)//", "JAVASCRIPT:alert(1)", "data:text/html,<script>alert(1)</script>",
       "vbscript:msgbox(1)", "file:///etc/passwd", "https://example.com/cb#frag", "/relative/callback", "not a uri", 42,
     ]) {
