@@ -16,7 +16,13 @@ The project website is a static site in [site/](site/README.md). Check it with `
 
 ## Self-hosting
 
-The server uses Cloudflare Workers, D1, R2, KV, Queues, and a Durable Object. Start with [INSTALL.md](INSTALL.md). The portable template is `server/wrangler.toml`; it contains example values only. Create your own Cloudflare resources and secrets before deployment.
+The server uses Cloudflare Workers, D1, R2, KV, Queues, and a Durable Object.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ashrocket/pidgindocs/tree/main/server)
+
+The button needs a free Cloudflare account. PidginCore fits the Workers Free plan for one owner. R2 storage asks you to turn on an R2 subscription once, even on the free tier. The [install page](https://pidgindocs.com/install/#one-click) explains the steps.
+
+Start with [INSTALL.md](INSTALL.md). The portable template is `server/wrangler.toml`; it contains example values only. Create your own Cloudflare resources and secrets before deployment.
 
 ## Shell client
 

@@ -40,6 +40,7 @@
       <nav class="toc" aria-label="On this page">
         <p>On this page</p>
         <ul>
+          <li><a href="#one-click">Deploy with one click</a></li>
           <li><a href="#before">Before you start</a></li>
           <li><a href="#resources">Create the resources</a></li>
           <li><a href="#values">Set the values</a></li>
@@ -51,6 +52,25 @@
       </nav>
 
       <div class="prose">
+        <section aria-labelledby="one-click">
+          <h2 id="one-click">Deploy with one click</h2>
+          <p>You can deploy PidginCore from a browser. Cloudflare builds the Worker in your own account.</p>
+          <p>You need a free Cloudflare account. Create one at <a href="https://dash.cloudflare.com/sign-up">dash.cloudflare.com/sign-up</a>. PidginCore fits the Workers Free plan for one owner. The free limits include 100,000 requests a day and 10 ms of CPU time per request. For current limits, read <a href="https://developers.cloudflare.com/workers/platform/pricing/">Workers pricing</a>. Heavy use may need Workers Paid, which costs $5 a month.</p>
+          <p>R2 storage asks you to turn on an R2 subscription in the dashboard once, even on the free tier. The free tier includes 10 GB.</p>
+          <p>You also need a GitHub or GitLab account. Cloudflare copies the PidginCore server into a new repository in that account. Then it creates the D1 database, R2 bucket, KV namespace, queues and Durable Object, applies the database migrations and deploys the Worker.</p>
+          <p><a class="button button-primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/ashrocket/pidgindocs/tree/main/server">Deploy to Cloudflare</a></p>
+          <p>Cloudflare asks for these values:</p>
+          <ul class="marked">
+            <li><code>API_KEY</code>: a long random value. Make one with <code>openssl rand -hex 32</code>.</li>
+            <li><code>OWNER_EMAIL</code>: the email address of the owner account.</li>
+            <li><code>WORKER_URL</code>: the final address of the Worker, with no trailing slash, such as <code>https://pidgindocs.example.workers.dev</code> with your own subdomain in place of <code>example</code>. Your workers.dev subdomain is shown under Workers &amp; Pages in the Cloudflare dashboard.</li>
+          </ul>
+          <p>If you get <code>WORKER_URL</code> wrong, change the variable in the dashboard and deploy again.</p>
+          <p>After it deploys, open <code>WORKER_URL/health</code>. Then follow <a href="#after">After you deploy</a> to sign in as the owner.</p>
+          <p>PidginCore uses no referral link. Nobody is paid when you open a Cloudflare account.</p>
+          <p>The manual steps below remain for people who want to create each resource themselves.</p>
+        </section>
+
         <section aria-labelledby="before">
           <h2 id="before">Before you start</h2>
           <p>You need these items:</p>
