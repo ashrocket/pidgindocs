@@ -559,3 +559,23 @@ export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id
   ).bind(input.title, body, row.id).run();
   return (res.meta?.changes ?? 0) > 0 ? { id: row.id } : null;
 }
+
+/**
+ * Fold a status into its session's open row, else insert it (one conditional insert, so two first
+ * statuses of a session make one row). Checks the caller's team and project scope before it folds.
+ * If the open row closed between the two steps, inserts plainly.
+ */
+export async function createOrFoldStatus(
+  env: Env, input: CreateMessageInput, fold: FoldStatusInput, ctx?: ExecutionContext
+): Promise<CreateMessageResult & { folded: boolean }> {
+  try { await assertWorkspacePublishScope(env, input.userId, fold.teamId, fold.projectId); }
+  catch (err) { if (err instanceof WorkspaceAccessError) throw new MessageBlockInputError(err.message); throw err; }
+  const first = await foldStatus(env, fold);
+  if (first) return { id: first.id, body: fold.body, blocks: [], teamId: fold.teamId, sharing: "shared", folded: true };
+  const withClosed = { ...input, ...(fold.final ? { statusClosed: true } : {}) };
+  const created = await createMessage(env, { ...withClosed, onlyIfNoOpenStatus: true }, ctx);
+  if (!created.skipped) return { ...created, folded: false };
+  const again = await foldStatus(env, fold);
+  if (again) return { id: again.id, body: fold.body, blocks: [], teamId: fold.teamId, sharing: "shared", folded: true };
+  return { ...(await createMessage(env, withClosed, ctx)), folded: false };
+}

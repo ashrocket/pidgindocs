@@ -95,11 +95,36 @@ describe("status folding", () => {
     expect(rows[0].body).toBe("second\nfirst");
   });
 
-  it("an MCP status keeps inserting a row each time; folding is the HTTP route's", async () => {
+  it("an MCP status without instance_id never folds; with one it does", async () => {
     const u = await makeUser("b");
-    await u.mcp("pidgin_send_message", { title: "x", type: "status", body: "a", instance_id: "inst-1" });
-    await u.mcp("pidgin_send_message", { title: "y", type: "status", body: "b", instance_id: "inst-1" });
+    await u.mcp("pidgin_send_message", { title: "x", type: "status", body: "a" });
+    await u.mcp("pidgin_send_message", { title: "y", type: "status", body: "b" });
     expect(await u.rows()).toHaveLength(2);
+    const one = await u.mcp("pidgin_send_message", { title: "z", type: "status", body: "c", instance_id: "inst-1" });
+    const two = await u.mcp("pidgin_send_message", { title: "z2", type: "status", body: "d", instance_id: "inst-1" });
+    expect(one.body.result.structuredContent.message.folded).toBeUndefined();
+    expect(two.body.result.structuredContent.message.folded).toBe(true);
+    expect(two.body.result.structuredContent.message.id).toBe(one.body.result.structuredContent.message.id);
+    expect(await u.rows()).toHaveLength(3);
+  });
+
+  it("an MCP status takes final, rejects a non-boolean, folds without a second push, and respects scope", async () => {
+    const u = await makeUser("b2");
+    await u.mcp("pidgin_send_message", { title: "x", type: "status", body: "a", instance_id: "inst-2" });
+    const pushes = vi.mocked(sendPushNotification).mock.calls.length;
+    const audits = await u.audit();
+    const last = await u.mcp("pidgin_send_message", { title: "y", type: "status", body: "done", instance_id: "inst-2", final: true });
+    expect(last.body.result.structuredContent.message.folded).toBe(true);
+    expect(vi.mocked(sendPushNotification).mock.calls.length).toBe(pushes);
+    expect(await u.audit()).toBe(audits);
+    const closed = (await u.rows()).find((r) => r.instance_session_id === "inst-2");
+    expect(closed.status_closed_at).not.toBeNull();
+    const next = await u.mcp("pidgin_send_message", { title: "n", type: "status", body: "again", instance_id: "inst-2" });
+    expect(next.body.result.structuredContent.message.folded).toBeUndefined();
+    const bad = await u.mcp("pidgin_send_message", { title: "n", type: "status", instance_id: "inst-2", final: "yes" });
+    expect(bad.body.result.isError).toBe(true);
+    const outsider = await u.mcp("pidgin_send_message", { title: "n", type: "status", instance_id: "inst-2", team_id: "team-not-mine" });
+    expect(outsider.body.result.isError).toBe(true);
   });
 
   it("does not fold into a row older than 4 hours", async () => {
