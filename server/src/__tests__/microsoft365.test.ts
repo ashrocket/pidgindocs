@@ -300,7 +300,7 @@ describe("microsoft365Destination.deliver — OneDrive output", () => {
     expect(result).toContain(".md");
 
     const uploadCall = fetchMock.mock.calls.find(
-      (c) => typeof c[0] === "string" && c[0].includes("graph.microsoft.com") && c[0].includes("/content"),
+      (c) => typeof c[0] === "string" && new URL(c[0]).hostname === "graph.microsoft.com" && new URL(c[0]).pathname.endsWith("/content"),
     );
     expect(uploadCall).toBeTruthy();
     const headers = (uploadCall![1] as RequestInit).headers as Record<string, string>;
@@ -345,7 +345,7 @@ describe("microsoft365Destination.deliver — OneDrive output", () => {
     expect(result).toContain(".html");
 
     const uploadCall = fetchMock.mock.calls.find(
-      (c) => typeof c[0] === "string" && c[0].includes("graph.microsoft.com") && c[0].includes("/content"),
+      (c) => typeof c[0] === "string" && new URL(c[0]).hostname === "graph.microsoft.com" && new URL(c[0]).pathname.endsWith("/content"),
     );
     const headers = (uploadCall![1] as RequestInit).headers as Record<string, string>;
     expect(headers["Content-Type"]).toBe("text/html; charset=utf-8");
