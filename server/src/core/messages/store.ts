@@ -535,29 +535,34 @@ function foldedBody(newText: string, earlier: string | null): string {
 /**
  * The living status item: update the caller's open status row for this session instead of inserting.
  * One UPDATE of unindexed columns. A fold is not a new delivery: no audit row, no push, no
- * destination post, no message_blocks, no usage reservation, and the read flag is left alone. Two
- * folds at once both succeed and the last write wins the body. The caller has already checked
- * that the user may post in this team and project. Returns null when there is nothing to fold into.
+ * destination post, no message_blocks, no usage reservation, and the read flag is left alone. The
+ * UPDATE only lands on the body it read, so two folds at once keep both lines: the one that lost
+ * reads again and retries once, and if it loses again it reports nothing to fold into (the caller
+ * then inserts). The caller has already checked that the user may post in this team and project.
+ * Returns null when there is nothing to fold into.
  */
 export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id: string } | null> {
-  const row = await env.DB.prepare(
-    `SELECT m.id, m.body FROM messages m
-     WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
-       AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
-       AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
-       AND m.created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
-       AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)
-     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`
-  )
-    .bind(input.userId, input.teamId ?? null, input.projectId ?? null, input.sessionId, input.instanceProject)
-    .first<{ id: string; body: string | null }>();
-  if (!row) return null;
-  const body = foldedBody(input.body ?? input.title, row.body);
-  const res = await env.DB.prepare(
-    `UPDATE messages SET title = ?, body = ?${input.final ? ", status_closed_at = datetime('now')" : ""}
-     WHERE id = ? AND status_closed_at IS NULL`
-  ).bind(input.title, body, row.id).run();
-  return (res.meta?.changes ?? 0) > 0 ? { id: row.id } : null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const row = await env.DB.prepare(
+      `SELECT m.id, m.body FROM messages m
+       WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
+         AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
+         AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
+         AND m.created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
+         AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)
+       ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`
+    )
+      .bind(input.userId, input.teamId ?? null, input.projectId ?? null, input.sessionId, input.instanceProject)
+      .first<{ id: string; body: string | null }>();
+    if (!row) return null;
+    const body = foldedBody(input.body ?? input.title, row.body);
+    const res = await env.DB.prepare(
+      `UPDATE messages SET title = ?, body = ?${input.final ? ", status_closed_at = datetime('now')" : ""}
+       WHERE id = ? AND status_closed_at IS NULL AND body IS ?`
+    ).bind(input.title, body, row.id, row.body).run();
+    if ((res.meta?.changes ?? 0) > 0) return { id: row.id };
+  }
+  return null;
 }
 
 /**
