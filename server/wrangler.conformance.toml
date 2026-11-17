@@ -55,7 +55,7 @@ WORKER_URL = "https://pidgindocs.example.workers.dev"
 MAIL_FROM = "PidginDocs <pidgindocs@example.com>"
 
 [triggers]
-crons = ["17 * * * *", "43 3 * * *"]
+crons = ["17 * * * *", "43 3 * * *", "*/5 * * * *"]
 
 [[rules]]
 type = "Data"

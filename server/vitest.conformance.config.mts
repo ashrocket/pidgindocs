@@ -6,7 +6,7 @@ import { defineConfig } from "vitest/config";
 const CONFORMANCE_TESTS = [
   "app-shell", "artifact-house-style", "artifact-publication-d1", "artifacts", "auth-utils", "base-path",
   "builtin-styles", "chat-gchat", "chat-ingest", "commute-routes", "core-boundary", "core-utils", "cron",
-  "crypto", "design-system", "design-systems", "design-systems-http", "diagram-zoom", "discuss",
+  "crypto", "design-system", "design-systems", "design-systems-http", "diagram-zoom", "discuss", "drafts",
   "enhance-anthropic", "identities",
   "jwks-refetch", "jwt-verify", "message-blocks", "microsoft365", "middleware", "no-model-ids", "oauth",
   "oauth-login", "operator-reader", "pinned-assets", "playlist", "preview", "publish-markdown", "rc",
