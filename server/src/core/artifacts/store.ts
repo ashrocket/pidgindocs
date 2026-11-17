@@ -11,7 +11,8 @@ import {
   extractHtmlTitle,
   renderArtifactMarkdown,
 } from "./render";
-import { editionLibraryQuery, editionLibraryPlacements, editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage } from "../edition-hooks";
+import { editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage } from "../edition-hooks";
+import { applyLibraryQuery, loadEnabledLibraryPlacements } from "../library/query";
 
 // Artifact identity + version store (Claude Code artifact parity). Unlike
 // documents — which are messages rows — artifacts have stable identity and N
@@ -641,7 +642,7 @@ export async function listArtifacts(env: Env, input: ListArtifactsInput): Promis
     binds.push(like, like);
   }
 
-  editionLibraryQuery(env,{userId:input.userId,type:"artifact",alias:"artifacts",project:input.libraryProject,tag:input.libraryTag},clauses,binds);
+  applyLibraryQuery(env,{userId:input.userId,type:"artifact",alias:"artifacts",project:input.libraryProject,tag:input.libraryTag},clauses,binds);
   const cursor = decodeCursor(input.cursor);
   if (cursor) {
     clauses.push("(updated_at < ? OR (updated_at = ? AND id < ?))");
@@ -660,7 +661,7 @@ export async function listArtifacts(env: Env, input: ListArtifactsInput): Promis
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   const last = page.at(-1);
-  const library = await editionLibraryPlacements(env,input.userId,page.map(row=>({type:"artifact",id:row.id})));
+  const library = await loadEnabledLibraryPlacements(env,input.userId,page.map(row=>({type:"artifact",id:row.id})));
   for(const row of page) if(library.has(`artifact:${row.id}`)) row.library=library.get(`artifact:${row.id}`);
   return {
     artifacts: page,

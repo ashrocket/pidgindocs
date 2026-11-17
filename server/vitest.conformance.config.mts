@@ -8,7 +8,7 @@ const CONFORMANCE_TESTS = [
   "batch", "builtin-styles", "chat-gchat", "chat-ingest", "commute-routes", "core-boundary", "core-utils", "cron",
   "crypto", "design-system", "design-systems", "design-systems-http", "diagram-zoom", "discuss", "drafts",
   "enhance-anthropic", "identities",
-  "jwks-refetch", "jwt-verify", "message-blocks", "microsoft365", "middleware", "no-model-ids", "oauth",
+  "jwks-refetch", "jwt-verify", "library-contract", "library-search", "library-security", "message-blocks", "microsoft365", "middleware", "no-model-ids", "oauth",
   "oauth-login", "operator-reader", "pinned-assets", "playlist", "preview", "publish-markdown", "rc",
   "registry", "reply", "reply-isolation", "reply-liveness", "setup-auth", "setup-page", "setup-status",
   "status-folding", "stored-html-sandbox", "theme-palette", "typeset", "webpush", "workspace-overview",

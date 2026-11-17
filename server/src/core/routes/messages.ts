@@ -29,7 +29,8 @@ import {
   type FoldStatusInput,
   type SerializedMessageBlock,
 } from "../messages/store";
-import { editionLibraryQuery, editionLibraryPlacements, editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage, editionAccountActiveSql } from "../edition-hooks";
+import { editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage, editionAccountActiveSql } from "../edition-hooks";
+import { applyLibraryQuery, loadEnabledLibraryPlacements } from "../library/query";
 
 // Convert SQLite datetime string ("2026-05-11 12:34:56") to unix timestamp seconds
 function toUnixSeconds(dateStr: unknown): number {
@@ -749,7 +750,7 @@ export async function handleGetMessages(
     binds.push(`%${escaped}%`, `%${escaped}%`);
   }
 
-  if(type === "document") editionLibraryQuery(env,{userId,type:"document",alias:"messages",project:url.searchParams.get("library_project")||undefined,tag:url.searchParams.get("library_tag")||undefined},conditions,binds);
+  if(type === "document") applyLibraryQuery(env,{userId,type:"document",alias:"messages",project:url.searchParams.get("library_project")||undefined,tag:url.searchParams.get("library_tag")||undefined},conditions,binds);
   let query = "SELECT * FROM messages";
   if (conditions.length > 0) {
     query += " WHERE " + conditions.join(" AND ");
@@ -802,7 +803,7 @@ export async function handleGetMessages(
 
   const has_more = result.results.length > limit;
   const messages = has_more ? result.results.slice(0, limit) : result.results;
-  const library = await editionLibraryPlacements(env,userId,messages.filter(row=>row.type === "document").map(row=>({type:"document",id:String(row.id)})));
+  const library = await loadEnabledLibraryPlacements(env,userId,messages.filter(row=>row.type === "document").map(row=>({type:"document",id:String(row.id)})));
   for(const row of messages) if(library.has(`document:${row.id}`)) row.library=library.get(`document:${row.id}`);
   const blockMap = await loadMessageBlocks(
     env,
@@ -1373,14 +1374,14 @@ async function getSharedMessages(request: Request, env: Env, userId: string): Pr
   if (search) { clauses.push("(m.title LIKE ? OR m.body LIKE ?)"); binds.push(`%${search}%`, `%${search}%`); }
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
   const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
-  if(url.searchParams.get("type") === "document") editionLibraryQuery(env,{userId,type:"document",alias:"m",project:url.searchParams.get("library_project")||undefined,tag:url.searchParams.get("library_tag")||undefined},clauses,binds);
+  if(url.searchParams.get("type") === "document") applyLibraryQuery(env,{userId,type:"document",alias:"m",project:url.searchParams.get("library_project")||undefined,tag:url.searchParams.get("library_tag")||undefined},clauses,binds);
   const rows = await env.DB.prepare(`SELECT m.*, s.read AS personal_read, s.read_at AS personal_read_at,
     s.archived_at AS personal_archived_at, s.dismiss_action AS personal_dismiss_action, s.pinned AS personal_pinned
     FROM messages m LEFT JOIN message_user_state s ON s.message_id = m.id AND s.user_id = ?
     WHERE ${clauses.join(" AND ")} ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?`)
     .bind(...binds, limit + 1, offset).all<Record<string, unknown>>();
   const page = rows.results.slice(0, limit);
-  const library = await editionLibraryPlacements(env,userId,page.filter(row=>row.type === "document").map(row=>({type:"document",id:String(row.id)})));
+  const library = await loadEnabledLibraryPlacements(env,userId,page.filter(row=>row.type === "document").map(row=>({type:"document",id:String(row.id)})));
   for(const row of page) if(library.has(`document:${row.id}`)) row.library=library.get(`document:${row.id}`);
   const blocks = await loadMessageBlocks(env, page.map(row => String(row.id)));
   const items = page.map(row => serializeMessage(row.team_id ? { ...row,

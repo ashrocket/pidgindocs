@@ -65,6 +65,7 @@ import { canAdminWorkspace, listTeams } from "./workspace";
 import { getSetupStatus } from "./setup/status";
 import { createInviteCode } from "./invites";
 import { handleOwnerUsers, handleOwnerInviteCode } from "./routes/owner-admin";
+import { handleLibrary } from "./library";
 
 export const coreRouter = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -87,6 +88,8 @@ export const coreRouter = {
       if (editionBlocksRequest(env, method, path)) {
         return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
       }
+      // The private Library (pages, API) when the deployment has it; a deployment without it falls through to 404.
+      { const routed = await handleLibrary(request, env, path); if (routed) return routed; }
       { const routed = await editionRoutes().controlFirst?.(routeContext); if (routed) return routed; }
       { const routed = await editionRoutes().hostingFirst?.(routeContext); if (routed) return routed; }
       { const routed = await editionRoutes().teamsTranslation?.(routeContext); if (routed) return routed; }

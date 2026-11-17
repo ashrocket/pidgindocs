@@ -19,6 +19,8 @@ export interface Env {
   // Anthropic API key for server-side document enhancement + design-system
   // import. Unset = enhancement features are rejected with a clear error.
   ANTHROPIC_API_KEY?: string;
+  /** Search provider key for the Library. Without it, search, ask and suggest answer 503 search_not_configured. */
+  TYPESAFE_API_KEY?: string;
   // Optional override for web text translation; uses the existing server key.
   TRANSLATION_MODEL?: string;
   // Comma-separated tenant allowlist for UI and content translation.
