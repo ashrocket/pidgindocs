@@ -11,7 +11,7 @@ const CONFORMANCE_TESTS = [
   "jwks-refetch", "jwt-verify", "message-blocks", "microsoft365", "middleware", "no-model-ids", "oauth",
   "oauth-login", "operator-reader", "pinned-assets", "playlist", "preview", "publish-markdown", "rc",
   "registry", "reply", "reply-isolation", "reply-liveness", "setup-auth", "setup-page", "setup-status",
-  "stored-html-sandbox", "theme-palette", "typeset", "webpush", "workspace-overview",
+  "status-folding", "stored-html-sandbox", "theme-palette", "typeset", "webpush", "workspace-overview",
 ].map((name) => `src/__tests__/${name}.test.ts`);
 
 export default defineConfig(async () => ({

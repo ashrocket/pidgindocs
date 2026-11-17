@@ -23,8 +23,10 @@ import {
 import { sendPushNotification } from "../push/apns";
 import {
   createMessage,
+  foldStatus,
   loadMessageBlocks,
   MessageBlockInputError,
+  type FoldStatusInput,
   type SerializedMessageBlock,
 } from "../messages/store";
 import { editionLibraryQuery, editionLibraryPlacements, editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage, editionAccountActiveSql } from "../edition-hooks";
@@ -181,6 +183,10 @@ export async function handlePostMessage(
     return json({ ok: false, error: `invalid type "${payload.type}": must be one of ${validTypes.join(", ")}` }, 400);
   }
 
+  if (payload.final !== undefined && typeof payload.final !== "boolean") {
+    return json({ ok: false, error: '"final" must be a boolean' }, 400);
+  }
+
   const html = typeof payload.html === "string" && payload.html.trim() ? payload.html : null;
   const markdown = typeof payload.markdown === "string" && payload.markdown.trim() ? payload.markdown : null;
   const body = typeof payload.body === "string" && payload.body.trim() ? payload.body : null;
@@ -272,6 +278,27 @@ export async function handlePostMessage(
     await assertWorkspacePublishScope(env,authedUser.userId,payload.team_id,payload.project_id);
   } catch(err) { return json({ok:false,error:err instanceof Error ? err.message : "invalid team scope"},err instanceof DocumentAudienceError ? err.status : 403); }
   if (payload.team_id && payload.public) return json({ ok: false, error: "team documents must remain private" }, 400);
+
+  // Living status item: a status from one session updates its open row instead of adding a new one.
+  // A status with blocks never folds. Scope was checked above, so a fold writes only where an insert could.
+  const statusFold: FoldStatusInput | null = payload.type === "status" && payload.blocks === undefined
+    ? {
+        userId: authedUser.userId,
+        teamId: payload.team_id ?? null,
+        projectId: payload.project_id ?? null,
+        sessionId: payload.instance.session_id,
+        instanceProject: payload.instance.project,
+        title: payload.title,
+        body,
+        final: payload.final === true,
+      }
+    : null;
+  const foldedResponse = (foldedId: string) => json({ ok: true, data: { id: foldedId, type: "status", folded: true } }, 200);
+  if (statusFold) {
+    const folded = await foldStatus(env, statusFold);
+    if (folded) return foldedResponse(folded.id);
+  }
+
   if (payload.type === "document" && payload.sharing === "shared" && enhance) {
     try {
       const teamId = await resolveSharingTeam(env, authedUser.userId, payload.team_id);
@@ -342,6 +369,25 @@ export async function handlePostMessage(
   let storageReserved = false;
   let aiReserved = false;
   let created;
+  const releaseReservations = async () => {
+    const releases: Promise<unknown>[] = [];
+    if (aiReserved) {
+      releases.push(releaseEditionUsage(
+        env, authedUser.userId, "ai_actions", 1, `message:${id}:ai:rollback`
+      ));
+    }
+    if (storageReserved) {
+      releases.push(releaseEditionUsage(
+        env, authedUser.userId, "storage_bytes", storageSize, `message:${id}:storage:rollback`
+      ));
+    }
+    if (deliveryReserved) {
+      releases.push(releaseEditionUsage(
+        env, authedUser.userId, "deliveries", 1, `message:${id}:delivery:rollback`
+      ));
+    }
+    await Promise.allSettled(releases);
+  };
   try {
     const hosted = await editionAccountLimits(env, authedUser.userId);
     if (hosted && storageSize > hosted.max_upload_bytes) {
@@ -395,9 +441,7 @@ export async function handlePostMessage(
       await storeSourceMarkdown(env, id, markdown, payload.title);
     }
 
-    created = await createMessage(
-      env,
-      {
+    const messageInput: Parameters<typeof createMessage>[1] = {
         id,
         type: payload.type,
         title: payload.title,
@@ -422,32 +466,26 @@ export async function handlePostMessage(
         instance: payload.instance,
         userId: authedUser.userId,
         blocks: payload.blocks,
-      },
-      ctx
-    );
+        ...(statusFold?.final ? { statusClosed: true } : {}),
+    };
+    // A status races other statuses of its session: the first insert is conditional, and one that
+    // finds an open row folds into it instead. If that row closed in the gap, insert plainly.
+    created = await createMessage(env, statusFold ? { ...messageInput, onlyIfNoOpenStatus: true } : messageInput, ctx);
+    if (created.skipped) {
+      const again = statusFold ? await foldStatus(env, statusFold) : null;
+      if (again) {
+        await releaseReservations();
+        return foldedResponse(again.id);
+      }
+      created = await createMessage(env, messageInput, ctx);
+    }
   } catch (err) {
     if (docKey) {
       await env.DOCS.delete(docKey).catch(() => {});
       const sourceKey = sourceMarkdownKey(docKey);
       if (sourceKey) await env.DOCS.delete(sourceKey).catch(() => {});
     }
-    const releases: Promise<unknown>[] = [];
-    if (aiReserved) {
-      releases.push(releaseEditionUsage(
-        env, authedUser.userId, "ai_actions", 1, `message:${id}:ai:rollback`
-      ));
-    }
-    if (storageReserved) {
-      releases.push(releaseEditionUsage(
-        env, authedUser.userId, "storage_bytes", storageSize, `message:${id}:storage:rollback`
-      ));
-    }
-    if (deliveryReserved) {
-      releases.push(releaseEditionUsage(
-        env, authedUser.userId, "deliveries", 1, `message:${id}:delivery:rollback`
-      ));
-    }
-    await Promise.allSettled(releases);
+    await releaseReservations();
     if (err instanceof MessageBlockInputError) {
       return json({ ok: false, error: err.message }, 400);
     }
