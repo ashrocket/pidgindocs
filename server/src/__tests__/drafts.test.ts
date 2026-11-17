@@ -9,7 +9,7 @@ import { runGovernedContentCleanup } from "../core/governed-content-cleanup";
 import { PublishInputError, publishDocument } from "../core/documents";
 import {
   commitDraft, commitStaleDrafts, currentDraft, deleteDraft, deleteOldDrafts, flushDraftCleanup, putDraft, runDraftSweep,
-  DRAFT_CRON, DRAFT_IDLE_MS, DRAFT_KEEP_MS, DRAFT_MAX_BYTES, DRAFT_MAX_RETAINED_BYTES,
+  DRAFT_CRON, DRAFT_IDLE_MS, DRAFT_STAGING_MS, DRAFT_KEEP_MS, DRAFT_MAX_BYTES, DRAFT_MAX_RETAINED_BYTES,
 } from "../core/drafts";
 import type { Env } from "../core/types";
 
@@ -283,6 +283,52 @@ describe("who may commit a draft", () => {
     expect((await u.commit(k)).status).toBe(200);
   });
 
+  it("lets a user with room for the draft but not for the draft and the publish commit it", async () => {
+    const u = await user(), k = token();
+    const used = new Map<string, number>();
+    let limit = Infinity;
+    installEditionHooks({
+      reserveUsage: async (_e, _u, metric: UsageMetric, amount, key) => {
+        if (metric !== "storage_bytes") return { managed: false };
+        if (!used.has(key)) {
+          const total = [...used.values()].reduce((n, v) => n + v, 0);
+          if (total + amount > limit) throw new UsageRefused("storage full", 402);
+          used.set(key, amount);
+        }
+        return { managed: true };
+      },
+      releaseUsage: async (_e, _u, metric: UsageMetric, _amount, key) => {
+        if (metric === "storage_bytes") used.set(key.replace(/release$|rollback$/, "add"), 0);
+        return { managed: true };
+      },
+    });
+    const body = doc(`<p>${"x".repeat(5000)}</p>`);
+    const size = new TextEncoder().encode(JSON.stringify(body)).byteLength;
+    limit = size + 4000; // room for the draft, but not for the draft and the published copy together
+    expect((await u.put(k, body)).status).toBe(200);
+    expect((await u.commit(k)).status).toBe(200);
+    expect(await u.count()).toBe(1);
+    expect([...used.entries()].filter(([key]) => key.startsWith("draft:")).every(([, v]) => v === 0)).toBe(true);
+    // A failed commit keeps the draft and does not release twice.
+    const k2 = token();
+    expect((await u.put(k2, doc("<p>again</p>"))).status).toBe(200);
+    installEditionHooks({ reserveUsage: async () => ({ managed: true }), releaseUsage: async () => ({ managed: true }) });
+  });
+
+  it("treats a storage read error as transient and commits on a later run", async () => {
+    const u = await user(), k = token();
+    await u.put(k, doc());
+    const flaky = wrap(env, { get: async () => { throw new Error("R2 unavailable"); } });
+    const first = await commitDraft(flaky, u.id, k);
+    expect(first.status).toBe(503);
+    expect(first.retry).toBe(true);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM draft_commits").first<{ n: number }>())!.n).toBe(0);
+    await env.DB.prepare("UPDATE draft_revisions SET created_ms = ? WHERE owner = ?").bind(Date.now() - DRAFT_IDLE_MS - 60_000, u.id).run();
+    expect(await commitStaleDrafts(flaky, DRAFT_IDLE_MS)).toEqual({ committed: 0, failed: 0, skipped: 1 });
+    expect(await commitStaleDrafts(env, DRAFT_IDLE_MS)).toEqual({ committed: 1, failed: 0, skipped: 0 });
+    expect(await u.count()).toBe(1);
+  });
+
   it("rejects sibling ownership and cookie writes without same-origin proof", async () => {
     const a = await user(), b = await user(), k = token();
     await a.put(k, doc());
@@ -489,6 +535,26 @@ describe("the five-minute sweep", () => {
     expect(await currentDraft(env, u.id, k)).not.toBeNull();
     expect(await runDraftSweep(env, hour + 2 * 60_000)).toContain("deleted 1 drafts");
     expect(await currentDraft(env, u.id, k)).toBeNull();
+  });
+
+  it("retires a stale staged upload and releases its bytes once", async () => {
+    const u = await user(), k = token(), m = ledger();
+    await u.put(k, doc());
+    const id = (await currentDraft(env, u.id, k))!.id;
+    const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+    await env.DB.prepare("UPDATE draft_revisions SET state = 'staging', created_ms = ? WHERE id = ?").bind(hour - DRAFT_STAGING_MS - 60_000, id).run();
+    expect(m.held).toBeGreaterThan(0);
+    await runDraftSweep(env, hour + 2 * 60_000);
+    expect(m.held).toBe(0);
+    expect(await env.DB.prepare("SELECT id FROM draft_revisions WHERE id = ?").bind(id).first()).toBeNull();
+    await runDraftSweep(env, hour + 3 * 60_000);
+    expect(m.released.size).toBe(1);
+    // A recent staged upload is left alone.
+    await u.put(k, doc());
+    const fresh = (await currentDraft(env, u.id, k))!.id;
+    await env.DB.prepare("UPDATE draft_revisions SET state = 'staging' WHERE id = ?").bind(fresh).run();
+    await runDraftSweep(env, Date.now() - Date.now() % 3_600_000 + 60_000);
+    expect(await env.DB.prepare("SELECT state FROM draft_revisions WHERE id = ?").bind(fresh).first<{ state: string }>()).toEqual({ state: "staging" });
   });
 
   it("runs none of core's daily work", async () => {

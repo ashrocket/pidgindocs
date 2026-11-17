@@ -12,6 +12,8 @@ export const DRAFT_MAX_PER_USER = 50;
 export const DRAFT_MAX_RETAINED_BYTES = DRAFT_MAX_BYTES * DRAFT_MAX_PER_USER;
 export const DRAFT_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 export const DRAFT_IDLE_MS = 10 * 60_000;
+/** A staged upload older than this belongs to a Worker that died mid-PUT. */
+export const DRAFT_STAGING_MS = 60 * 60_000;
 export const DRAFT_KEEP_MS = 7 * 24 * 60 * 60_000;
 /** The five-minute trigger. It runs only the draft sweep. */
 export const DRAFT_CRON = "*/5 * * * *";
@@ -206,6 +208,8 @@ export async function commitDraft(env: Env, userId: string, key: string, idem?: 
   const release = () => env.DB.prepare("DELETE FROM draft_commits WHERE revision = ? AND claim_id = ? AND status = 'pending'").bind(revision,row.claim_id).run();
   let publishing = false;
   try {
+    // A storage or database read error here is transient: nothing has been published, so the claim is released
+    // (below) and the draft stays committable. Only a validation or permission refusal records a permanent receipt.
     const retained = await env.DB.prepare("SELECT * FROM draft_revisions WHERE id = ? AND owner = ?").bind(revision,userId).first<DraftRevision>();
     const object = retained ? await env.DOCS.get(retained.object_key) : null;
     if (!object) { const result=failure(404, "draft not found"); await finish(env,row,result,"rejected"); return result; }
@@ -214,6 +218,12 @@ export async function commitDraft(env: Env, userId: string, key: string, idem?: 
     catch { const result=failure(400, "draft is not valid JSON"); await finish(env,row,result,"rejected"); return result; }
     if (!stored || Array.isArray(stored) || typeof stored !== "object") {
       const result=failure(400, "draft is not an object"); await finish(env,row,result,"rejected"); return result;
+    }
+    // The commit's own publish reserves storage for the content, so the draft's reservation is given back first.
+    // The release key is the draft's, so it happens once; metered_bytes is cleared only after it succeeded.
+    if (retained!.metered_bytes > 0) {
+      await releaseEditionUsage(env, userId, "storage_bytes", retained!.metered_bytes, releaseKey(revision));
+      await env.DB.prepare("UPDATE draft_revisions SET metered_bytes = 0 WHERE id = ?").bind(revision).run();
     }
     publishing = true;
     const result = await publishStored(env,userId,stored);
@@ -230,8 +240,8 @@ export async function commitDraft(env: Env, userId: string, key: string, idem?: 
       // No automatic re-execution after a possibly committed write.
       return failure(503, "commit_outcome_unknown");
     }
-    await finish(env,row,failure(503, "draft unavailable"),"rejected").catch(() => {});
-    return failure(503, "draft unavailable");
+    await release().catch(() => {});
+    return failure(503, "draft unavailable", true);
   }
 }
 
@@ -257,6 +267,10 @@ export async function deleteOldDrafts(env: Env, now = Date.now()): Promise<numbe
   const dropped = await changed(env.DB.prepare(`UPDATE draft_revisions SET state = 'retired' WHERE id IN
     (SELECT id FROM draft_revisions WHERE state = 'active' AND created_ms < ? LIMIT 100)`)
     .bind(now-DRAFT_KEEP_MS));
+  // A Worker killed mid-PUT leaves a staged row. Retire it after a safe delay; the flush deletes any object
+  // and releases the reserved bytes once, by the revision's own release key.
+  await env.DB.prepare(`UPDATE draft_revisions SET state = 'retired' WHERE id IN
+    (SELECT id FROM draft_revisions WHERE state = 'staging' AND created_ms < ? LIMIT 100)`).bind(now-DRAFT_STAGING_MS).run();
   await flushDraftCleanup(env);
   // Pending and held receipts stay indefinitely: they are the evidence against a replay.
   await env.DB.batch([
