@@ -430,4 +430,28 @@ describe("status folding side effects", () => {
     expect(await u.audit()).toBe(audits);
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'store-marker' AND user_id = ?").bind(u.id).first<{ n: number }>())!.n).toBe(0);
   });
+
+  it("two folds from the same read keep both lines; one that loses twice falls through to an insert", async () => {
+    const u = await makeUser("s8");
+    await u.post({ body: "first" });
+    const id = (await u.rows())[0].id;
+    const fold = (body: string) => ({ userId: u.id, teamId: null, projectId: null, sessionId: "sess-1", instanceProject: "p", title: "t", body });
+    // Another fold writes between this fold's read and its write, once.
+    const racing = (times: number) => {
+      let left = times;
+      return { ...env, DB: { prepare: (sql: string) => {
+        const stmt = env.DB.prepare(sql);
+        if (!sql.startsWith("SELECT m.id, m.body")) return stmt;
+        return { bind: (...a: unknown[]) => { const bound = stmt.bind(...a); return { first: async () => {
+          const row = await bound.first();
+          if (left-- > 0) await env.DB.prepare("UPDATE messages SET body = body || char(10) || 'racer' WHERE id = ?").bind(id).run();
+          return row;
+        } }; } };
+      } } } as unknown as Env;
+    };
+    expect(await foldStatus(racing(1), fold("mine"))).toEqual({ id });
+    expect((await u.rows())[0].body).toBe("mine\nfirst\nracer");
+    expect(await foldStatus(racing(2), fold("lost"))).toBeNull();
+    expect((await u.rows())[0].body).not.toContain("lost");
+  });
 });

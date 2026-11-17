@@ -125,6 +125,11 @@ async function holdIfStale(env: Env, owner: string, key: string, claimId: string
 export async function handleBatch(
   request: Request, env: Env, dispatch: BatchDispatch
 ): Promise<Response> {
+  // A session cookie and a Bearer key together could name two accounts: the receipt would belong to
+  // one while the item routes write as the other. Refuse before any receipt is claimed.
+  if (/(?:^|;\s*)session=/.test(request.headers.get("Cookie") ?? "") && /^Bearer /.test(request.headers.get("Authorization") ?? "")) {
+    return reply({ ok: false, error: "ambiguous_credentials" }, 400);
+  }
   const caller = await resolveCallerCredential(request, env);
   if (!caller) return unauthorized();
   // Receipts belong to the account whose content the items write. The item routes resolve only the

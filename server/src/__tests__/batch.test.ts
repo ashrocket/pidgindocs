@@ -99,6 +99,17 @@ describe("POST /api/batch", () => {
     expect(await u.rows()).toBe(0);
   });
 
+  it("refuses a request that carries both a session cookie and a Bearer key, before any receipt", async () => {
+    const u = await makeUser("amb");
+    const session = crypto.randomUUID();
+    await env.SESSIONS.put(`session:${session}`, `${u.id}@example.test`);
+    const r = await u.send("POST", "/api/batch", { items: [msg("1")] }, { Cookie: `session=${session}`, Origin: origin, "Idempotency-Key": "amb-1" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("ambiguous_credentials");
+    expect(await u.receipt("amb-1")).toBeNull();
+    expect(await u.rows()).toBe(0);
+  });
+
   it("requires auth", async () => {
     const res = await coreWorker.fetch(new Request(origin + "/api/batch", {
       method: "POST", headers: { "Idempotency-Key": "k" }, body: JSON.stringify({ items: [msg("1")] }),
