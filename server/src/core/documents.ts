@@ -6,7 +6,8 @@ import { htmlToText } from "./commute/script";
 import { compileDesignSystem } from "./documents/design-system";
 import { listDesignSystems, resolveDesignSystem } from "./design-systems";
 import { renderMarkdownContent, typesetDocument } from "./documents/typeset";
-import { editionLibraryQuery, editionLibraryPlacements, editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage } from "./edition-hooks";
+import { editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage } from "./edition-hooks";
+import { applyLibraryQuery, loadEnabledLibraryPlacements } from "./library/query";
 import { canAdminWorkspace, getWorkspaceMembership } from "./workspace";
 import { DOCUMENT_FAMILY_SQL, documentFamilyBinds } from "./documents/family";
 
@@ -437,7 +438,7 @@ async function fetchDocumentRows(
   }
 
   if (!options.userId) return [];
-  editionLibraryQuery(env,{userId:options.userId,type:"document",alias:"messages",project:options.libraryProject,tag:options.libraryTag},clauses,binds);
+  applyLibraryQuery(env,{userId:options.userId,type:"document",alias:"messages",project:options.libraryProject,tag:options.libraryTag},clauses,binds);
   const sql = `
     SELECT id, title, body, doc_key, public, priority, created_at,
            instance_project, instance_model, instance_source, team_id, project_id,
@@ -475,7 +476,7 @@ export async function listDocuments(
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   const last = page.at(-1);
-  const library = input.userId ? await editionLibraryPlacements(env,input.userId,page.map(row=>({type:"document",id:row.id}))) : new Map();
+  const library = input.userId ? await loadEnabledLibraryPlacements(env,input.userId,page.map(row=>({type:"document",id:row.id}))) : new Map();
 
   return {
     items: page.map(row => {
@@ -509,7 +510,7 @@ export async function searchDocuments(
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
   const last = page.at(-1);
-  const library = input.userId ? await editionLibraryPlacements(env,input.userId,page.map(row=>({type:"document",id:row.id}))) : new Map();
+  const library = input.userId ? await loadEnabledLibraryPlacements(env,input.userId,page.map(row=>({type:"document",id:row.id}))) : new Map();
 
   return {
     items: page.map(row => {

@@ -62,8 +62,6 @@ export interface MentionRecord {
 }
 
 /** An MCP tool that an edition adds. */
-export interface LibraryResourceRef { type: "document" | "artifact"; id: string }
-export interface LibraryQueryInput { userId: string; type: "document" | "artifact"; alias: string; project?: string; tag?: string }
 export interface ContentStoredInput { userId: string; kind: "message" | "document" | "artifact"; id: string }
 
 export interface EditionMcpTool { name: string; description: string; inputSchema: Record<string, unknown>; [key: string]: unknown }
@@ -212,9 +210,8 @@ export interface EditionHooks {
   accountIdentities(env: Env, user: { id: string; email: string }): Promise<AccountIdentity[]>;
   /** Runs after an agent board post is stored (for example notifications). */
   onBoardPost(env: Env, entry: unknown): Promise<void>;
-  /** Private filing metadata and filters; editions cannot weaken the caller's existing content ACL. */
-  libraryQuery(env: Env, input: LibraryQueryInput, conditions: string[], binds: (string | number)[]): void;
-  libraryPlacements(env: Env, userId: string, refs: LibraryResourceRef[]): Promise<Map<string, unknown>>;
+  /** True when the deployment serves the private Library (routes, MCP tools, list filters). Core default: true. */
+  libraryEnabled(env: Env): boolean;
   /** Extra durable work committed in the same transaction as the content, with no network I/O. */
   contentStoreStatements(env: Env, input: ContentStoredInput): D1PreparedStatement[];
   replyStoreStatements(env: Env, input: { userId: string; messageId: string; guard: {sql:string;binds:unknown[]} }): D1PreparedStatement[];
@@ -306,8 +303,7 @@ const PIDGIN_CORE_DEFAULTS: EditionHooks = {
   memberIdentityAllowed: async () => true,
   accountIdentities: async (_env, user) => [{ email: user.email, provider: "primary", primary: true }],
   onBoardPost: async () => {},
-  libraryQuery: () => {},
-  libraryPlacements: async () => new Map(),
+  libraryEnabled: () => true,
   contentStoreStatements: () => [],
   replyStoreStatements: () => [],
   ticketResolver: async () => null,
@@ -421,8 +417,7 @@ export const editionAgentSponsorAccessSql = (env: Env, owner: string): string | 
 export const editionMemberIdentityAllowed = (env: Env, input: { teamId: string }, target: { id: string }, existing: unknown): Promise<boolean> =>
   hooks.memberIdentityAllowed(env, input, target, existing);
 export const editionAccountIdentities = (env: Env, user: { id: string; email: string }): Promise<AccountIdentity[]> => hooks.accountIdentities(env, user);
-export const editionLibraryQuery = (env: Env, input: LibraryQueryInput, conditions: string[], binds: (string | number)[]): void => hooks.libraryQuery(env,input,conditions,binds);
-export const editionLibraryPlacements = (env: Env, userId: string, refs: LibraryResourceRef[]): Promise<Map<string, unknown>> => hooks.libraryPlacements(env,userId,refs);
+export const editionLibraryEnabled = (env: Env): boolean => hooks.libraryEnabled(env);
 export const editionContentStoreStatements: EditionHooks["contentStoreStatements"] = (env,input) => hooks.contentStoreStatements(env,input);
 export const editionReplyStoreStatements: EditionHooks["replyStoreStatements"] = (env,input) => hooks.replyStoreStatements(env,input);
 export const editionOnBoardPost = (env: Env, entry: unknown): Promise<void> => hooks.onBoardPost(env, entry);
