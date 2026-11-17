@@ -22,6 +22,7 @@ import {
 import { createMessage } from "../messages/store";
 import { WorkspaceAccessError, assertWorkspacePublishScope, getWorkspaceResource, parseSharing } from "../workspace-access";
 import { listDocuments, publishDocument } from "../documents";
+import { loadWorkspaceTeamViews } from "../workspace-overview";
 import { listWorkspaceBackups } from "../workspace-backup";
 import type { Env, WorkspaceResourceType } from "../types";
 import { editionSlug, workspaceUserSessionId } from "../wire-names";
@@ -45,6 +46,13 @@ export async function handleListTeams(request: Request, env: Env): Promise<Respo
   // never infer it from the selected login server or an email address.
   const brandKey = editionBrand(env);
   return json({ ok: true, data: { teams: teams.map(team => ({ ...team, brand_key: brandKey })) } });
+}
+
+export async function handleWorkspaceOverview(request: Request, env: Env): Promise<Response> {
+  const userId = await requireUser(request, env);
+  if (!userId) return unauthorized();
+  const teams = await loadWorkspaceTeamViews(env, userId);
+  return json({ ok: true, data: { teams } });
 }
 
 export async function handleCreateTeam(request: Request, env: Env): Promise<Response> {

@@ -37,7 +37,7 @@ import { handleAddToPlaylist, handleClearPlaylist, handleGeneratePlaylistBriefin
 import { handleMcp } from "./routes/mcp";
 import { handleHelpApi } from "./routes/help";
 import { handleCloseConversation, handleCreateConversation, handleGChatConfig, handleGChatEvents, handleGetConversationMessages, handleListConversations, handleMatrixConfig, handlePostConversationMessage } from "./routes/chat";
-import { handleCreateComment, handleCreateDecisionMemo, handleCreateProject, handleUpdateProject, handleWorkspaceTags, handleSetResourceTags, handleCreateTeam, handleListComments, handleListDecisionMemos, handleListWorkspaceBackups, handleListProjects, handleListTeams, handleWorkspaceFeed, handleCreateWorkspacePost, handleWorkspaceMembers, handleShareWorkspaceResource, handleSetResourceSharing } from "./routes/workspace";
+import { handleCreateComment, handleCreateDecisionMemo, handleCreateProject, handleUpdateProject, handleWorkspaceTags, handleSetResourceTags, handleCreateTeam, handleListComments, handleListDecisionMemos, handleListWorkspaceBackups, handleListProjects, handleListTeams, handleWorkspaceFeed, handleWorkspaceOverview, handleCreateWorkspacePost, handleWorkspaceMembers, handleShareWorkspaceResource, handleSetResourceSharing } from "./routes/workspace";
 import { handleProjectManagementPolicy } from "./routes/project-management-policy";
 import { handleGetBoardInlineUsage, handleGetAgentBoardDocument, handleBulletinPostAction, handleCloseWorkBoard, handleCloseWorkspaceWorkBoard, handleCreateWorkBoard, handleCreateWorkspaceAgent, handleGetAgentBoard, handleJoinWorkBoard, handleListAgentBoards, handleListWorkspaceAgents, handlePostAgentBoard, handleRevokeWorkspaceAgent, handleTombstoneAgentBoardEntry } from "./routes/agent-board";
 import { handleRcCommand, handleRcPoll, handleRcSubmitResult, handleRcGetResult, handleRcStatus } from "./routes/rc";
@@ -154,6 +154,7 @@ export const coreRouter = {
 
       if (path.startsWith("/api/help/")) return await handleHelpApi(request, env);
       if (path === "/api/workspace/feed" && method === "GET") return await handleWorkspaceFeed(request, env);
+      if (path === "/api/workspace/overview" && method === "GET") return await handleWorkspaceOverview(request, env);
       { const routed = await editionRoutes().teamsApi?.(routeContext); if (routed) return routed; }
       if (path === "/api/favorites" || path.startsWith("/api/favorites/")) return await handleFavorites(request, env);
       if (path === "/api/notes" || path.startsWith("/api/notes/")) return await handleNotes(request, env);
