@@ -6,6 +6,7 @@ The project [MIT license](LICENSE) covers the original PidginDocs source and the
 
 - The adapted Jevbox files in `server/legacy/jevbox/` retain their upstream MIT copyright and license in [LICENSE-jevbox.md](server/legacy/jevbox/LICENSE-jevbox.md).
 - `server/fonts/Inter-Bold.woff` and `Inter-SemiBold.woff` retain the SIL Open Font License 1.1 and copyright in [OFL.txt](server/fonts/OFL.txt).
+- The PidginCore copies of the same fonts, `server/src/core/preview/fonts/Inter-Bold.woff` and `Inter-SemiBold.woff`, retain the same license in [OFL.txt](server/src/core/preview/fonts/OFL.txt).
 
 ## Runtime npm packages
 

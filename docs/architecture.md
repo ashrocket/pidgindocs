@@ -8,7 +8,9 @@ PidginCore is the open-source core of PidginDocs. It is a self-hosted Cloudflare
 
 This repository is the open-source PidginDocs server. It is the home of PidginCore.
 
-The hosted editions develop the newer core modules today. They will move those modules into this repository after a public-safety review. Until then, this repository holds an older copy of the core.
+The core lives in `server/src/core/`. The hosted editions import it at a pinned version.
+
+The core is the default Worker entry: `server/wrangler.toml` runs `server/src/core/worker.ts` and applies `server/src/core/migrations`. `server/legacy/` stays for now with its own config, `server/wrangler.legacy.toml` (`npm run dev:legacy`, `npm run test:legacy`), which applies `server/migrations`. The two schemas differ, so a database built from the legacy migrations is not a core database. Check a running core with `server/scripts/smoke-core.sh`.
 
 ## One deployment, one owner
 

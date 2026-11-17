@@ -35,7 +35,12 @@ jobs:
       - run: npx tsc --noEmit
         if: steps.scope.outputs.full != 'false'
         working-directory: server
-      - run: npm test
+      - name: Legacy entry tests
+        run: npm run test:legacy
+        if: steps.scope.outputs.full != 'false'
+        working-directory: server
+      - name: Core conformance tests
+        run: npm run test:conformance
         if: steps.scope.outputs.full != 'false'
         working-directory: server
       - name: Agent client tests

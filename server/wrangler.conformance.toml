@@ -1,0 +1,73 @@
+# Test-only copy of wrangler.toml for the conformance suite: same bindings, but
+# the entry installs no edition hooks.
+name = "pidgindocs"
+main = "src/__tests__/conformance-entry.ts"
+compatibility_date = "2026-05-28"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pidgindocs-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "src/core/migrations"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "pidgindocs-docs"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"
+
+[[queues.producers]]
+binding = "ENHANCE_QUEUE"
+queue = "pidgindocs-enhance"
+
+[[queues.consumers]]
+queue = "pidgindocs-enhance"
+max_batch_size = 1
+max_retries = 3
+dead_letter_queue = "pidgindocs-enhance-dlq"
+
+[[durable_objects.bindings]]
+name = "TEAM_EVENTS"
+class_name = "TeamEventsDO"
+
+[[durable_objects.bindings]]
+name = "MATRIX_SYNC"
+class_name = "MatrixSyncDO"
+
+# Durable Object migrations are append-only. v1 matches wrangler.legacy.toml, so a
+# Worker first deployed from that config keeps working. Never edit or drop a tag
+# that was already applied; add a new, later tag for each new class.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MatrixSyncDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["TeamEventsDO"]
+
+[vars]
+ENVIRONMENT = "development"
+WORKER_URL = "https://pidgindocs.example.workers.dev"
+MAIL_FROM = "PidginDocs <pidgindocs@example.com>"
+
+[triggers]
+crons = ["17 * * * *", "43 3 * * *"]
+
+[[rules]]
+type = "Data"
+globs = ["**/*.woff", "**/*.ttf", "**/*.otf", "**/*.jpg", "**/*.png", "**/*.mp4"]
+fallthrough = true
+
+[[rules]]
+type = "Text"
+globs = ["**/*.vtt"]
+fallthrough = true
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true

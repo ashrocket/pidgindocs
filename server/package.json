@@ -4,12 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev --config wrangler.toml",
+    "dev:legacy": "wrangler dev --config wrangler.legacy.toml",
     "deploy": "npm run db:migrate:self-host && wrangler deploy --config wrangler.toml",
-    "test": "vitest run",
+    "test": "npm run test:legacy && npm run test:conformance",
     "test:watch": "vitest",
+    "test:legacy": "vitest run",
+    "test:conformance": "vitest run --config vitest.conformance.config.mts --no-file-parallelism --maxWorkers=1",
     "db:migrate": "wrangler d1 migrations apply DB --local --config wrangler.toml",
     "db:migrate:self-host": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
-    "types": "wrangler types --config wrangler.toml"
+    "types": "wrangler types --config wrangler.legacy.toml"
   },
   "cloudflare": {
     "bindings": {
