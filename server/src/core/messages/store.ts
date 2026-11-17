@@ -221,6 +221,20 @@ export function deriveMessageBody(blocks: PreparedMessageBlock[]): string | null
   return body || null;
 }
 
+export const STATUS_FOLD_WINDOW = "-4 hours";
+export const STATUS_MAX_LINES = 20;
+export const STATUS_MAX_BYTES = 4096;
+
+// The open status row for (user, team, project, session, instance project). Binds, in order:
+// user, team, project, session, instance project. A row that carries message_blocks never
+// matches, so a fold cannot leave stale blocks.
+const OPEN_STATUS_MATCH = `SELECT 1 FROM messages m
+  WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
+    AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
+    AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
+    AND m.created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
+    AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)`;
+
 export interface CreateMessageInput {
   id?: string;
   type: "message" | "question" | "status" | "document";
@@ -251,9 +265,16 @@ export interface CreateMessageInput {
   // Documents only: undefined = private, or the version family's sharing.
   // Posts, questions and statuses in a team are always shared.
   sharing?: Sharing;
+  // Status only: insert only if no open status row matches (see createOrFoldStatus);
+  // otherwise write nothing and return skipped.
+  onlyIfNoOpenStatus?: boolean;
+  // Status only: insert the row already closed (a first status with final: true).
+  statusClosed?: boolean;
 }
 
 export interface CreateMessageResult {
+  // True when onlyIfNoOpenStatus found an open row and nothing was written.
+  skipped?: boolean;
   readAccess?: DocumentPublishPolicy["readAccess"];
   id: string;
   body: string | null;
@@ -293,14 +314,18 @@ export async function createMessage(
   // Checked inside the INSERT so two posts racing for one slug cannot both land.
   const slugGuard = input.type === "document" && input.exclusiveDocSlug && input.docSlug
     ? documentFamilyBinds({ id, doc_slug: input.docSlug, team_id: teamId, user_id: input.userId }) : null;
-  const values = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?";
+  // A conditional status insert writes nothing when an open status row matches. The sentinel after it
+  // then fails the batch (integer overflow), so no later statement runs and nothing is left half done.
+  const conditional = input.onlyIfNoOpenStatus === true && input.type === "status" && blocks.length === 0;
+  const values = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END";
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       `INSERT INTO messages (id, type, title, body, doc_key, priority, public,
         doc_slug, doc_version, is_latest, design_system, enhance_status, enhance_level,
         instance_model, instance_session_id, instance_project, instance_source, source_url, user_id,
-        interactive, team_id, project_id, doc_kind, doc_size, source_size, sharing, sharing_explicit)
-       ${slugGuard ? `SELECT ${values} WHERE NOT EXISTS (SELECT 1 FROM messages WHERE ${DOCUMENT_FAMILY_SQL})` : `VALUES (${values})`}`
+        interactive, team_id, project_id, doc_kind, doc_size, source_size, sharing, sharing_explicit, status_closed_at)
+       ${slugGuard ? `SELECT ${values} WHERE NOT EXISTS (SELECT 1 FROM messages WHERE ${DOCUMENT_FAMILY_SQL})`
+         : conditional ? `SELECT ${values} WHERE NOT EXISTS (${OPEN_STATUS_MATCH})` : `VALUES (${values})`}`
     ).bind(
       id,
       input.type,
@@ -329,8 +354,11 @@ export async function createMessage(
       input.sourceSize ?? 0,
       sharing,
       input.type === "document" && input.sharing !== undefined ? 1 : 0,
-      ...(slugGuard ?? [])
+      input.type === "status" && input.statusClosed ? 1 : 0,
+      ...(slugGuard ?? []),
+      ...(conditional ? [input.userId, input.teamId ?? null, input.projectId ?? null, input.instance.session_id, input.instance.project] : [])
     ),
+    ...(conditional ? [env.DB.prepare("SELECT abs(-9223372036854775808) WHERE NOT EXISTS (SELECT 1 FROM messages WHERE id = ?)").bind(id)] : []),
     ...(publishPolicy?.statements ?? []),
   ];
 
@@ -393,6 +421,9 @@ export async function createMessage(
   let results: D1Result[];
   try { results = await env.DB.batch(statements); }
   catch(error) {
+    if (conditional && error instanceof Error && error.message.includes("integer overflow")) {
+      return { id, body, blocks: [], teamId: teamId ?? null, sharing, skipped: true };
+    }
     // Only this trigger's known atomic rollback is an input refusal. Preserve
     // unrelated/ambiguous storage errors and all existing edition statements.
     if (error instanceof Error && error.message.includes("artifact block version unavailable")) {
@@ -478,4 +509,53 @@ export async function loadMessageBlocks(
     grouped.set(row.message_id, blocks);
   }
   return grouped;
+}
+
+export interface FoldStatusInput {
+  userId: string;
+  teamId: string | null;
+  projectId: string | null;
+  sessionId: string;
+  instanceProject: string;
+  title: string;
+  body: string | null;
+  final?: boolean;
+}
+
+function foldedBody(newText: string, earlier: string | null): string {
+  const enc = new TextEncoder();
+  const lines = `${newText}\n${earlier ?? ""}`.split("\n").filter((l, i) => i === 0 || l.length > 0).slice(0, STATUS_MAX_LINES);
+  // Drop the oldest lines until it fits; a lone oversized line is cut.
+  while (lines.length > 1 && enc.encode(lines.join("\n")).byteLength > STATUS_MAX_BYTES) lines.pop();
+  let out = lines.join("\n");
+  while (enc.encode(out).byteLength > STATUS_MAX_BYTES) out = out.slice(0, Math.floor(out.length * 0.9));
+  return out;
+}
+
+/**
+ * The living status item: update the caller's open status row for this session instead of inserting.
+ * One UPDATE of unindexed columns. A fold is not a new delivery: no audit row, no push, no
+ * destination post, no message_blocks, no usage reservation, and the read flag is left alone. Two
+ * folds at once both succeed and the last write wins the body. The caller has already checked
+ * that the user may post in this team and project. Returns null when there is nothing to fold into.
+ */
+export async function foldStatus(env: Env, input: FoldStatusInput): Promise<{ id: string } | null> {
+  const row = await env.DB.prepare(
+    `SELECT m.id, m.body FROM messages m
+     WHERE m.user_id = ? AND m.team_id IS ? AND m.project_id IS ? AND m.instance_session_id = ?
+       AND m.instance_project = ? AND m.type = 'status' AND m.archived_at IS NULL
+       AND m.dismiss_action IS NULL AND m.status_closed_at IS NULL
+       AND m.created_at > datetime('now', '${STATUS_FOLD_WINDOW}')
+       AND NOT EXISTS (SELECT 1 FROM message_blocks b WHERE b.message_id = m.id)
+     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`
+  )
+    .bind(input.userId, input.teamId ?? null, input.projectId ?? null, input.sessionId, input.instanceProject)
+    .first<{ id: string; body: string | null }>();
+  if (!row) return null;
+  const body = foldedBody(input.body ?? input.title, row.body);
+  const res = await env.DB.prepare(
+    `UPDATE messages SET title = ?, body = ?${input.final ? ", status_closed_at = datetime('now')" : ""}
+     WHERE id = ? AND status_closed_at IS NULL`
+  ).bind(input.title, body, row.id).run();
+  return (res.meta?.changes ?? 0) > 0 ? { id: row.id } : null;
 }

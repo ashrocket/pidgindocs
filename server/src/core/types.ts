@@ -188,6 +188,8 @@ export interface MessagePayload {
   doc_id?: string;
   base_version?: number;
   force?: boolean;
+  // Status only: fold this update into the open status item, then close it.
+  final?: boolean;
   instance: InstanceIdentity;
 }
 
