@@ -72,7 +72,7 @@ import {
   touchConversation,
 } from "../chat/store";
 import { fanOutChatMessage } from "../chat/fanout";
-import { createMessage, MessageBlockInputError } from "../messages/store";
+import { createMessage, createOrFoldStatus, MessageBlockInputError, type CreateMessageInput, type CreateMessageResult } from "../messages/store";
 import { deleteMessageForUser } from "./messages";
 import { resolveAgentCredential } from "../agent-board";
 import { AudioInputError, createNarration, parseVoice, storeAudioFromUrl } from "../audio/service";
@@ -714,7 +714,8 @@ const TOOLS: McpTool[] = [
         team_id: { type: "string" },
         project_id: { type: "string" },
         source_url: { type: "string", format: "uri" },
-        instance_id: { type: "string", description: "If provided, updates working_on for this registered instance atomically." },
+        instance_id: { type: "string", description: "If provided, updates working_on for this registered instance atomically. A status with an instance_id also folds into that session's open status item." },
+        final: { type: "boolean", description: "For type='status' with instance_id: fold this update into the open status item, then close it so the next status starts a new one." },
         working_on: { type: "string", description: "Short description of what this instance is currently doing. Requires instance_id." },
         blocks: {
           type: "array",
@@ -2048,6 +2049,8 @@ async function callTool(
       const sourceUrl = optionalString(args, "source_url") || null;
       const instanceId = optionalString(args, "instance_id");
       const workingOn = optionalString(args, "working_on");
+      if (args.final !== undefined && typeof args.final !== "boolean") return toolResult("Invalid final value.", { error: "final must be a boolean" }, true);
+      const final = args.final === true;
 
       if (instanceId && workingOn !== undefined) {
         // Scope the working_on update to the caller so one tenant can't write
@@ -2057,11 +2060,9 @@ async function callTool(
         ).bind(workingOn ?? null, instanceId, userId).run();
       }
 
-      let created;
+      let created: CreateMessageResult & { folded?: boolean };
       try {
-        created = await createMessage(
-          env,
-          {
+        const messageInput: CreateMessageInput = {
             type: msgType,
             title,
             body,
@@ -2079,14 +2080,25 @@ async function callTool(
           docKind: docKind || "doc",
           userId,
           blocks: args.blocks as MessageBlockInput[] | undefined,
-        },
-          ctx
-        );
+        };
+        // Only a caller-supplied instance_id is a stable session; the generated mcp-<uuid> never folds.
+        created = instanceId && msgType === "status" && args.blocks === undefined
+          ? await createOrFoldStatus(env, messageInput, {
+              userId, teamId: optionalString(args, "team_id") ?? null, projectId: optionalString(args, "project_id") ?? null,
+              sessionId: instanceId, instanceProject: project, title, body, final,
+            }, ctx)
+          : await createMessage(env, messageInput, ctx);
       } catch (err) {
         if (err instanceof MessageBlockInputError) {
           return toolResult("Invalid composed message.", { error: err.message }, true);
         }
         throw err;
+      }
+
+      if (created.folded) {
+        return toolResult(`Updated status "${title}".`, {
+          message: { id: created.id, type: msgType, title, priority, project, folded: true },
+        });
       }
 
       return toolResult(
