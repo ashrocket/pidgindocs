@@ -4,6 +4,7 @@ import { Env } from "./types";
 import { runScheduledWorkspaceBackup } from "./workspace-backup-scheduled";
 import { promoteLatestVersion, sourceMarkdownKey } from "./documents";
 import { runEventsLifecycle } from "./events/dispatch";
+import { runBatchSweep } from "./routes/batch";
 
 export async function runExpiry(env: Env): Promise<{ deleted: number }> {
   // Find all rows where expires_at has passed and they are not pinned.
@@ -132,6 +133,8 @@ export async function scheduled(
 ): Promise<void> {
   try { await runGovernedContentCleanup(env); }
   catch { console.warn("Governed content cleanup will retry next run"); }
+  // Deployments without the hourly trigger sweep batch receipts here.
+  await runBatchSweep(env);
   // Edition jobs (for example paid cancellations, security monitoring, board
   // lifecycle and trash, member invitations) each have their own failure boundary.
   for (const job of editionScheduledJobs()) {

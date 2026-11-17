@@ -40,6 +40,7 @@ import { handleCloseConversation, handleCreateConversation, handleGChatConfig, h
 import { handleCreateComment, handleCreateDecisionMemo, handleCreateProject, handleUpdateProject, handleWorkspaceTags, handleSetResourceTags, handleCreateTeam, handleListComments, handleListDecisionMemos, handleListWorkspaceBackups, handleListProjects, handleListTeams, handleWorkspaceFeed, handleWorkspaceOverview, handleCreateWorkspacePost, handleWorkspaceMembers, handleShareWorkspaceResource, handleSetResourceSharing } from "./routes/workspace";
 import { handleProjectManagementPolicy } from "./routes/project-management-policy";
 import { handleCommitDraft, handleDeleteDraft, handlePutDraft } from "./routes/drafts";
+import { handleBatch, runBatchSweep } from "./routes/batch";
 import { DRAFT_CRON, runDraftSweep } from "./drafts";
 import { handleGetBoardInlineUsage, handleGetAgentBoardDocument, handleBulletinPostAction, handleCloseWorkBoard, handleCloseWorkspaceWorkBoard, handleCreateWorkBoard, handleCreateWorkspaceAgent, handleGetAgentBoard, handleJoinWorkBoard, handleListAgentBoards, handleListWorkspaceAgents, handlePostAgentBoard, handleRevokeWorkspaceAgent, handleTombstoneAgentBoardEntry } from "./routes/agent-board";
 import { handleRcCommand, handleRcPoll, handleRcSubmitResult, handleRcGetResult, handleRcStatus } from "./routes/rc";
@@ -356,6 +357,12 @@ export const coreRouter = {
       }
 
       if (path === "/api/document-audience") return editionDocumentAudienceEnabled(env) ? await handleDocumentAudience(request, env) : json({ok:false,error:"Not found"},404);
+
+      // Batch: each item is a request of its own for its single route, served through the same
+      // router and the edition's metering, so the item meets every check that route does.
+      if (path === "/api/batch" && method === "POST") {
+        return await handleBatch(request, env, (item) => editionMeterRequest(item, env, ctx, () => coreRouter.fetch(item, env, ctx)));
+      }
 
       // Messages
       if (path === "/api/messages" && method === "POST") {
@@ -1060,6 +1067,7 @@ export const coreRouter = {
     if (event.cron !== HOURLY_CRON) return scheduled(event, env, ctx);
     try { await runGovernedContentCleanup(env); }
     catch { console.warn("Governed content cleanup will retry next run"); }
+    await runBatchSweep(env);
     await editionRoutes().hourly?.(event, env);
   },
   queue: async (batch, env) => handleEnhanceQueueBatch(batch, env),
