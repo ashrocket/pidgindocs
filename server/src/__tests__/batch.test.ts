@@ -255,6 +255,20 @@ describe("POST /api/batch", () => {
     expect((await u.receipt("old-held")).status).toBe("held");
   });
 
+  it("a crash after the items committed leaves a pending claim that the sweep holds, so a retry cannot send them again", async () => {
+    const u = await makeUser("p3");
+    const items = [msg("1"), msg("2")], key = "crashed";
+    const first = await u.batch(items, key);
+    expect(first.status).toBe(200);
+    // The answer was never recorded: put the receipt back as a pending claim from ten minutes ago.
+    await env.DB.prepare("UPDATE batch_receipts SET status = 'pending', http_status = NULL, body = NULL, created_ms = ? WHERE owner = ? AND key = ?")
+      .bind(Date.now() - 10 * 60_000, u.id, key).run();
+    expect(await runBatchSweep(env)).toMatchObject({ held: 1 });
+    expect((await u.receipt(key)).status).toBe("held");
+    expect((await u.batch(items, key)).body.error).toBe("batch_abandoned");
+    expect(await u.rows()).toBe(2);
+  });
+
   it("the hourly cleanup runs the sweep", async () => {
     const u = await makeUser("p2");
     await u.plant("cron-stale", [msg("1")], 10);
