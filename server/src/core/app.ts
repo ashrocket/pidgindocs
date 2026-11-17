@@ -39,6 +39,8 @@ import { handleHelpApi } from "./routes/help";
 import { handleCloseConversation, handleCreateConversation, handleGChatConfig, handleGChatEvents, handleGetConversationMessages, handleListConversations, handleMatrixConfig, handlePostConversationMessage } from "./routes/chat";
 import { handleCreateComment, handleCreateDecisionMemo, handleCreateProject, handleUpdateProject, handleWorkspaceTags, handleSetResourceTags, handleCreateTeam, handleListComments, handleListDecisionMemos, handleListWorkspaceBackups, handleListProjects, handleListTeams, handleWorkspaceFeed, handleWorkspaceOverview, handleCreateWorkspacePost, handleWorkspaceMembers, handleShareWorkspaceResource, handleSetResourceSharing } from "./routes/workspace";
 import { handleProjectManagementPolicy } from "./routes/project-management-policy";
+import { handleCommitDraft, handleDeleteDraft, handlePutDraft } from "./routes/drafts";
+import { DRAFT_CRON, runDraftSweep } from "./drafts";
 import { handleGetBoardInlineUsage, handleGetAgentBoardDocument, handleBulletinPostAction, handleCloseWorkBoard, handleCloseWorkspaceWorkBoard, handleCreateWorkBoard, handleCreateWorkspaceAgent, handleGetAgentBoard, handleJoinWorkBoard, handleListAgentBoards, handleListWorkspaceAgents, handlePostAgentBoard, handleRevokeWorkspaceAgent, handleTombstoneAgentBoardEntry } from "./routes/agent-board";
 import { handleRcCommand, handleRcPoll, handleRcSubmitResult, handleRcGetResult, handleRcStatus } from "./routes/rc";
 import { handleOAuthAuthorizationServerMetadata, handleOAuthAuthorize, handleOAuthProtectedResourceMetadata, handleOAuthRegister, handleOAuthToken } from "./routes/oauth";
@@ -361,6 +363,12 @@ export const coreRouter = {
       }
       if (path === "/api/messages" && method === "GET") {
         return await handleGetMessages(request, env);
+      }
+      const draftMatch = path.match(/^\/api\/drafts\/([A-Za-z0-9_-]{8,64})(\/commit)?$/);
+      if (draftMatch) {
+        if (draftMatch[2] && method === "POST") return await handleCommitDraft(request, env, draftMatch[1]);
+        if (!draftMatch[2] && method === "PUT") return await handlePutDraft(request, env, draftMatch[1]);
+        if (!draftMatch[2] && method === "DELETE") return await handleDeleteDraft(request, env, draftMatch[1]);
       }
       if (path === "/api/messages/unread-count" && method === "GET") {
         const userId = await resolveCallerUserId(request, env);
@@ -1041,6 +1049,12 @@ export const coreRouter = {
   },
   // An edition that gates the work (for example during maintenance) wraps this router.
   scheduled: async (event, env, ctx) => {
+    // The five-minute trigger commits idle drafts and nothing else of core's. An edition that shares it runs after the sweep.
+    if (event.cron === DRAFT_CRON) {
+      try { console.log(await runDraftSweep(env, event.scheduledTime)); } catch (err) { console.error("Draft sweep failed", err); }
+      await editionRoutes().scheduled?.(event, env);
+      return;
+    }
     if (await editionRoutes().scheduled?.(event, env)) return;
     if (event.cron === WORKSPACE_BACKUP_CRON) return runScheduledWorkspaceBackup(env, event.scheduledTime);
     if (event.cron !== HOURLY_CRON) return scheduled(event, env, ctx);
