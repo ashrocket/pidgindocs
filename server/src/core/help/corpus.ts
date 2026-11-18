@@ -1,8 +1,10 @@
-import { HELP_ARTICLE_SOURCES, HELP_CORPUS_VERSION } from "./corpus.generated";
+import { editionHelpCorpus } from "../edition-hooks";
 
 /**
- * The edition's help articles, parsed once at module load from the bundled sources
- * (server/src/help/articles/*.md, bundled by scripts/build-help-corpus.mjs).
+ * The edition's help articles, parsed on first use from the sources the edition's
+ * `helpCorpus` hook supplies, and cached by the corpus version. Core ships none: the default
+ * hook returns an empty corpus. The edition bundles its own (for example from
+ * articles/*.md by scripts/build-help-corpus.mjs).
  *
  * Each article has YAML-ish front matter (slug, title, summary, audience,
  * tags) and a Markdown body. Every H2 section is a retrieval chunk with a
@@ -12,8 +14,6 @@ import { HELP_ARTICLE_SOURCES, HELP_CORPUS_VERSION } from "./corpus.generated";
  *
  * No Node APIs: this runs in the Worker.
  */
-
-export { HELP_CORPUS_VERSION };
 
 export type HelpAudience = "people" | "admins" | "agents";
 
@@ -206,19 +206,53 @@ function loadCorpus(sources: ReadonlyArray<{ file: string; raw: string }>) {
   return { articles, errors };
 }
 
-const corpus = loadCorpus(HELP_ARTICLE_SOURCES);
+interface ParsedCorpus {
+  version: string;
+  articles: readonly HelpArticle[];
+  errors: readonly string[];
+  bySlug: ReadonlyMap<string, HelpArticle>;
+  chunks: readonly HelpChunk[];
+}
+
+let parsed: ParsedCorpus | undefined;
+
+/** Parsed on first use and again only when the hook's corpus version changes, so a hook installed after import takes effect. */
+function corpus(): ParsedCorpus {
+  const { version, sources } = editionHelpCorpus();
+  if (parsed?.version !== version) {
+    const loaded = loadCorpus(sources);
+    const articles = Object.freeze(loaded.articles);
+    parsed = {
+      version,
+      articles,
+      errors: Object.freeze(loaded.errors),
+      bySlug: new Map(articles.map((article) => [article.slug, article])),
+      chunks: Object.freeze(articles.flatMap(helpArticleChunks)),
+    };
+  }
+  return parsed;
+}
+
+/** The version of the corpus in force; "none" when the edition installs no articles. */
+export function helpCorpusVersion(): string {
+  return corpus().version;
+}
 
 /** Every article, in file-name order. */
-export const HELP_ARTICLES: readonly HelpArticle[] = Object.freeze(corpus.articles);
+export function helpArticles(): readonly HelpArticle[] {
+  return corpus().articles;
+}
 
 /** Problems found while parsing; empty for a healthy corpus. */
-export const HELP_CORPUS_ERRORS: readonly string[] = Object.freeze(corpus.errors);
-
-const BY_SLUG = new Map(HELP_ARTICLES.map((article) => [article.slug, article]));
+export function helpCorpusErrors(): readonly string[] {
+  return corpus().errors;
+}
 
 export function getHelpArticle(slug: string): HelpArticle | undefined {
-  return BY_SLUG.get(slug);
+  return corpus().bySlug.get(slug);
 }
 
 /** One chunk per H2 section (plus lead chunks), in article then section order. */
-export const HELP_CHUNKS: readonly HelpChunk[] = Object.freeze(HELP_ARTICLES.flatMap(helpArticleChunks));
+export function helpChunks(): readonly HelpChunk[] {
+  return corpus().chunks;
+}

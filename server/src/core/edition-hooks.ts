@@ -221,6 +221,8 @@ export interface EditionHooks {
   ticketResolver(env: Env, teamId: string | undefined): Promise<EditionTicketResolver | null>;
   /** Text added to the ticket-links sentence of the Bulletin board help, such as `, or names an issue of a project connected to <product>`; empty for none. */
   ticketHelpText(): string;
+  /** The help articles this edition ships: raw Markdown sources and a version that changes with them. Core default: none. */
+  helpCorpus(): { version: string; sources: readonly { file: string; raw: string }[] };
   /** Runs when a person opens help in a team (for example a welcome checklist). */
   onHelpOpened(env: Env, input: { teamId: string; userId: string }): Promise<void>;
   /** The team that the person last chose, from the request; core takes the first team. */
@@ -308,6 +310,7 @@ const PIDGIN_CORE_DEFAULTS: EditionHooks = {
   replyStoreStatements: () => [],
   ticketResolver: async () => null,
   ticketHelpText: () => "",
+  helpCorpus: () => ({ version: "none", sources: [] }),
   onHelpOpened: async () => {},
   afterSignIn: async () => {},
   selectedSpace: async (_request, _userId, teams) => teams[0] ?? null,
@@ -424,6 +427,7 @@ export const editionOnBoardPost = (env: Env, entry: unknown): Promise<void> => h
 export const editionAfterSignIn = (env: Env, input: { userId: string; email: string }): Promise<void> => hooks.afterSignIn(env, input);
 export const editionTicketResolver = (env: Env, teamId: string | undefined): Promise<EditionTicketResolver | null> => hooks.ticketResolver(env, teamId);
 export const editionTicketHelpText = (): string => hooks.ticketHelpText();
+export const editionHelpCorpus: EditionHooks["helpCorpus"] = () => hooks.helpCorpus();
 export const editionOnHelpOpened = (env: Env, input: { teamId: string; userId: string }): Promise<void> => hooks.onHelpOpened(env, input);
 export const editionSelectedSpace = <T extends { id: string }>(request: Request, userId: string, teams: T[]): Promise<T | null> =>
   hooks.selectedSpace(request, userId, teams) as Promise<T | null>;

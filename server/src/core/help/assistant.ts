@@ -1,4 +1,4 @@
-import { HELP_CORPUS_VERSION, HELP_LEAD_ANCHOR, type HelpChunk } from "./corpus";
+import { HELP_LEAD_ANCHOR, helpCorpusVersion, type HelpChunk } from "./corpus";
 import { editionArticle, editionArticles, editionChunks } from "./edition-text";
 import { renderAnswerHtml, splitFencedCode } from "./render";
 import { editionAiBudgetLeft, editionProductName, editionRecordAiUsage } from "../edition-hooks";
@@ -233,6 +233,7 @@ const BM25_B = 0.75;
 let lexicalIndex: LexicalIndex | null = null;
 
 function getLexicalIndex(): LexicalIndex {
+  syncCorpusCaches();
   if (lexicalIndex) return lexicalIndex;
   const terms: Array<Map<string, number>> = [];
   const lengths: number[] = [];
@@ -373,6 +374,18 @@ interface CorpusVectorsEntry {
 const corpusVectors = new Map<string, CorpusVectorsEntry>();
 let corpusSignature: Promise<string> | null = null;
 
+let cachedCorpusVersion: string | undefined;
+
+/** Drops the lexical index and signature when the installed corpus changes. */
+function syncCorpusCaches(): void {
+  const version = helpCorpusVersion();
+  if (cachedCorpusVersion !== undefined && cachedCorpusVersion !== version) {
+    corpusSignature = null;
+    lexicalIndex = null;
+  }
+  cachedCorpusVersion = version;
+}
+
 /** Clears the in-memory embedding and lexical caches (tests only). */
 export function __resetHelpAssistantCache(): void {
   corpusVectors.clear();
@@ -382,7 +395,7 @@ export function __resetHelpAssistantCache(): void {
 
 /** KV key for the corpus embeddings; a new corpus version or model gets a new key. */
 export function helpEmbeddingKey(model: string): string {
-  return `help-emb:${HELP_CORPUS_VERSION}:${model}`;
+  return `help-emb:${helpCorpusVersion()}:${model}`;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -393,6 +406,7 @@ async function sha256(text: string): Promise<string> {
 // The chunker can change without the article text changing; the signature of
 // the exact embedded texts guards a cached entry against that.
 function embeddedTextSignature(): Promise<string> {
+  syncCorpusCaches();
   corpusSignature ??= sha256(editionChunks().map(helpChunkEmbeddingText).join("\u0000"));
   return corpusSignature;
 }

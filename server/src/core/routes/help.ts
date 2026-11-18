@@ -9,7 +9,7 @@ import {
   type HelpActor,
   type HelpAskResult,
 } from "../help/assistant";
-import { HELP_CORPUS_VERSION } from "../help/corpus";
+import { helpCorpusVersion } from "../help/corpus";
 import { resolveApiKeyUser, resolveSessionUserId } from "../middleware";
 import type { Env } from "../types";
 import { json } from "../utils";
@@ -118,7 +118,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
 function handleArticles(request: Request): Response {
   const query = new URL(request.url).searchParams.get("q") ?? "";
   if (Array.from(query).length > HELP_QUESTION_MAX_CHARS) return fail(400, `q must be at most ${HELP_QUESTION_MAX_CHARS} characters`);
-  const response = respond({ ok: true, data: { version: HELP_CORPUS_VERSION, articles: searchHelpArticles(query) } });
+  const response = respond({ ok: true, data: { version: helpCorpusVersion(), articles: searchHelpArticles(query) } });
   response.headers.set("Cache-Control", "public, max-age=300");
   return response;
 }
