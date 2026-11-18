@@ -8,7 +8,8 @@
 //    exactly one h1, and no script, style element or inline style;
 //  - every image has alt text;
 //  - no page or style sheet points to an origin other than
-//    github.com/ashrocket/pidgindocs and duva.work;
+//    github.com/ashrocket/pidgindocs, duva.work, deploy.workers.cloudflare.com,
+//    dash.cloudflare.com and developers.cloudflare.com;
 //  - the color pairs in the style sheet meet their contrast limits.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -25,8 +26,12 @@ const fail = (file, message) => problems.push(`${file}: ${message}`);
 // Hosts that appear only as placeholders in examples, never as a link target.
 const PLACEHOLDER_HOST = /^(?:[a-z0-9-]+\.)*example\.(?:com|org|net|workers\.dev)$|^localhost$|^127\.0\.0\.1$/;
 
+// Cloudflare pages for the one-click deploy and the manual install steps.
+const CLOUDFLARE_HOSTS = new Set(['deploy.workers.cloudflare.com', 'dash.cloudflare.com', 'developers.cloudflare.com']);
+
 function isAllowedExternal(url) {
   if (url.protocol !== 'https:') return false;
+  if (CLOUDFLARE_HOSTS.has(url.host)) return true;
   if (url.host === 'duva.work') return true;
   if (url.host === 'github.com') {
     const repo = '/ashrocket/pidgindocs';

@@ -31,7 +31,7 @@ The check needs Node.js 20 or later. It has no dependencies. It fails if one of 
 - An internal link or an in-page anchor does not point to a file or an element.
 - A page has no title, no `lang` attribute, no meta description, no skip link or not exactly one `h1`.
 - A page has a script, a style element, an inline style or an image without `alt` text.
-- A page points to an outside origin other than `github.com/ashrocket/pidgindocs` and `duva.work`.
+- A page points to an outside origin other than `github.com/ashrocket/pidgindocs`, `duva.work`, `deploy.workers.cloudflare.com`, `dash.cloudflare.com` and `developers.cloudflare.com`.
 - A color pair in the style sheet is below its contrast limit.
 
 The GitHub workflow `Verify` runs this check.

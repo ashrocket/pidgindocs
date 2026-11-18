@@ -2,6 +2,10 @@
 
 This guide is a starting point for a single-owner Cloudflare Worker installation. Review the limits and external service requirements before using it with real data.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ashrocket/pidgindocs/tree/main/server)
+
+The button needs a free Cloudflare account. PidginCore fits the Workers Free plan for one owner. R2 storage asks you to turn on an R2 subscription once, even on the free tier. The [install page](https://pidgindocs.com/install/#one-click) explains the steps. The manual steps below still work.
+
 ## Prerequisites
 
 - Node.js 22 or later and npm
