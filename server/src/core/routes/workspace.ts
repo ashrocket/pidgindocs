@@ -1,4 +1,4 @@
-import { editionRecordMentions, editionResolveMentions, MentionRejected } from "../edition-hooks";
+import { editionRecordMentions, editionResolveMentions, MentionRejected, ProjectNameRejected } from "../edition-hooks";
 import { editionAccessError, editionBrand, editionMemberLimitMessage, editionSingleWorkspaceRefusal, editionTeamCreationError } from "../edition-hooks";
 import { json } from "../utils";
 import { resolveCallerUserId, unauthorized } from "../middleware";
@@ -86,7 +86,7 @@ export async function handleListProjects(request: Request, env: Env): Promise<Re
 export async function handleCreateProject(request: Request, env: Env): Promise<Response> {
   const userId = await requireUser(request, env);
   if (!userId) return unauthorized();
-  let body: { team_id?: string; name?: string; slug?: string; description?: string | null };
+  let body: { team_id?: string; name?: string; slug?: string; description?: string | null; short_name?: string };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -104,10 +104,12 @@ export async function handleCreateProject(request: Request, env: Env): Promise<R
       name,
       slug: parseString(body.slug) || undefined,
       description: body.description?.trim() || null,
+      shortName: parseString(body.short_name) || undefined,
     });
     if (!project) return json({ ok: false, error: "forbidden" }, 403);
     return json({ ok: true, data: { project } }, 201);
   } catch (error) {
+    if (error instanceof ProjectNameRejected) return json({ ok: false, error: error.message }, error.status);
     if (String(error).includes("UNIQUE constraint failed")) return json({ ok: false, error: "project already exists" }, 409);
     throw error;
   }

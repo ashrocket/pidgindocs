@@ -3,6 +3,7 @@ import { agentSponsorAccessSql } from "../agent-access";
 import { createPersonBoardEntry } from "../agent-board";
 import { sendPushNotification } from "../push/apns";
 import type { Env } from "../types";
+import { linkSegment, projectHref } from "../short-links";
 import { canAdminWorkspace, getWorkspaceMembership } from "../workspace";
 import type { EventType } from "./emit";
 import { publishEvents, streamName, streamOfEvent } from "./live";
@@ -183,9 +184,10 @@ async function boardInfo(env: Env, projectId: string | null): Promise<BoardInfo 
     .first<{ name: string; board_kind: string; parent_project_id: string | null }>();
   if (!row) return null;
   // A work board opens inside its parent's board view.
-  const link = row.board_kind === "work" && row.parent_project_id
-    ? `/workspace?project=${encodeURIComponent(row.parent_project_id)}&view=board&board=${encodeURIComponent(projectId)}`
-    : `/workspace?project=${encodeURIComponent(projectId)}&view=board`;
+  const parent = row.board_kind === "work" && row.parent_project_id ? row.parent_project_id : null;
+  const href = await projectHref(env, parent ?? projectId);
+  const query = parent ? `view=board&board=${encodeURIComponent(projectId)}` : "view=board";
+  const link = `${href}${href.includes("?") ? "&" : "?"}${query}`;
   return { name: oneLine(row.name, 80), link };
 }
 
@@ -228,7 +230,7 @@ export async function describeEvent(env: Env, row: EventRow, payload: Payload): 
       const title = row.type === "question.replied"
         ? `${await userName(env, text(payload.replied_by_user_id))} answered your question`
         : "New question";
-      return { title: oneLine(title, 140), body: message?.title ? oneLine(message.title, 200) : null, link: messageId ? `/messages/${messageId}` : null };
+      return { title: oneLine(title, 140), body: message?.title ? oneLine(message.title, 200) : null, link: messageId ? `/messages/${await linkSegment(env, { kind: "message", id: messageId })}` : null };
     }
     default:
       return { title: row.type, body: null, link: null };

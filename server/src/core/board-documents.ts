@@ -7,13 +7,14 @@ import { editionAccountLimits, reserveEditionUsage, UsageRefused } from "./editi
 import { runGovernedContentCleanup } from "./governed-content-cleanup";
 import type { Env } from "./types";
 import { appHref } from "./base-path";
+import { linkSegments } from "./short-links";
 
 export const BOARD_DOCUMENT_MAX_CHARS = 100_000;
 
 /** Called only for an already-authorized, bounded board page. Keep full text
  * server-side for ticket detection; named responses expose only the link. */
-export async function loadBoardDocumentDetails(env: Env, entryIds: string[]): Promise<Map<string, {
-  body: string; original_reference: string | null; document_url: string;
+export async function loadBoardDocumentDetails(env: Env, entryIds: string[], mint = false): Promise<Map<string, {
+  body: string; original_reference: string | null; document_url: string; document_id: string; stored_url: string;
 }>> {
   if (!entryIds.length) return new Map();
   if (entryIds.length > 100) throw new Error("board document lookup exceeds page limit");
@@ -21,10 +22,29 @@ export async function loadBoardDocumentDetails(env: Env, entryIds: string[]): Pr
     FROM agent_board_documents d JOIN messages m ON m.id=d.message_id
     WHERE d.entry_id IN (${entryIds.map(() => "?").join(",")})`)
     .bind(...entryIds).all<{ entry_id: string; original_reference: string | null; id: string; body: string }>()).results;
+  // A list only reads codes that exist; a single post response (mint) creates its code.
+  const codes = await linkSegments(env, (rows ?? []).map(row => ({ kind: "document" as const, id: row.id })), mint);
   return new Map((rows ?? []).map(row => [row.entry_id, {
     body: row.body, original_reference: row.original_reference,
-    document_url: appHref(env, `/docs/${row.id}`),
+    document_url: appHref(env, `/docs/${codes.get(`document:${row.id}`)}`),
+    document_id: row.id,
+    stored_url: appHref(env, `/docs/${row.id}`),
   }]));
+}
+
+/** The entry's own link text points at the document by UUID (stored when the row did not exist yet).
+ * Rewrite an exact trailing `\n\n<stored url>` in the body and a reference equal to it to the short
+ * link, so the UI's equality checks against document_url still hold. Stored rows are unchanged. */
+export function withShortDocumentLink<T extends { body: string; reference: string | null }>(
+  entry: T, document: { document_url: string; stored_url: string } | undefined,
+): T {
+  if (!document || document.document_url === document.stored_url) return entry;
+  const suffix = `\n\n${document.stored_url}`;
+  return {
+    ...entry,
+    body: entry.body.endsWith(suffix) ? entry.body.slice(0, -suffix.length) + `\n\n${document.document_url}` : entry.body,
+    reference: entry.reference === document.stored_url ? document.document_url : entry.reference,
+  };
 }
 
 export interface PreparedBoardDocument {
@@ -44,6 +64,8 @@ export async function prepareBoardDocument(env: Env, input: {
 }): Promise<PreparedBoardDocument> {
   const id = crypto.randomUUID();
   const key = `docs/${id}.html`;
+  // The row is inserted later in the caller's batch, so no code can exist yet: this stored link keeps the
+  // UUID. Responses that name the document mint its code once the row exists (loadBoardDocumentDetails).
   const url = appHref(env, `/docs/${id}`);
   const fullText = input.post.body + (input.post.reference ? `\n\nReference: ${input.post.reference}` : "");
   const html = typesetDocument({ title: input.post.topic, body: fullText, project: input.projectId, createdAt: new Date().toISOString() });

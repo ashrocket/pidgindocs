@@ -29,6 +29,12 @@ export type RouteBlock = (c: RouteContext) => Promise<Response | null>;
 export const HOURLY_CRON = "17 * * * *";
 export const WORKSPACE_BACKUP_CRON = "43 3 * * *";
 
+/** A request that the edition rewrote before routing, and an optional change to the router's response. */
+export interface ShortLinkRewrite {
+  request: Request;
+  finish?: (response: Response) => Response;
+}
+
 export interface EditionRoutes {
   teamAdministration?: RouteBlock;
   navigation?: readonly NavCommand[];
@@ -66,6 +72,10 @@ export interface EditionRoutes {
 
   /** True when a bare visit to /workspace must go to the Get started page first. */
   needsWelcome?: (env: Env, teamId: string, userId: string) => Promise<boolean>;
+  /** Current short names by project ID, for the team the workspace page shows. */
+  projectNames?: (env: Env, teamId: string) => Promise<Record<string, string>>;
+  /** Replaces a short code in the path with the item's id. A response here is the answer; null leaves the request as it is. */
+  rewriteRequest?: (request: Request, env: Env) => Promise<ShortLinkRewrite | Response | null>;
   /** True when the team has Microsoft Teams inclusions (the workspace page links to them). */
   hasTeamsInclusions?: (env: Env, teamId: string) => boolean;
   /** The Microsoft Teams channels that the setup page lists for this person. */

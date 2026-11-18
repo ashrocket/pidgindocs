@@ -10,6 +10,7 @@ import { editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEdition
 import { applyLibraryQuery, loadEnabledLibraryPlacements } from "./library/query";
 import { canAdminWorkspace, getWorkspaceMembership } from "./workspace";
 import { DOCUMENT_FAMILY_SQL, documentFamilyBinds } from "./documents/family";
+import { linkSegment } from "./short-links";
 
 const DEFAULT_LIST_LIMIT = 10;
 const MAX_LIST_LIMIT = 25;
@@ -1246,7 +1247,7 @@ export async function publishDocumentVersion(
     doc_slug: slug,
     doc_version: nextVersion,
     previous_id: latest.id,
-    url: `${origin}/${interactive ? "idoc" : "docs"}/${id}`,
+    url: `${origin}/${interactive ? "idoc" : "docs"}/${await linkSegment(env, { kind: "document", id })}`,
     interactive,
     team_id: latest.team_id,
     project_id: latest.project_id,

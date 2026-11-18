@@ -15,6 +15,7 @@ import { DOCUMENT_FAMILY_SQL, documentFamilyBinds } from "../documents/family";
 import { appPath, basePath } from "../base-path";
 import { translationLanguages, type Language } from "../translation-languages";
 import { operatorReader, type ReaderLabels } from "../documents/operator-reader";
+import { linkSegment, linkSegments, requestLinkSegment } from "../short-links";
 import { boardTicket, bulletinRules } from "../bulletin-lifecycle";
 
 const ONE_HOUR = 60 * 60 * 1000;
@@ -317,12 +318,13 @@ async function versionBanner(env: Env, docId: string, row: DocViewRow): Promise<
     if (latestVersion <= version) return "";
     return `<aside id="${versionBannerId()}" aria-label="Document version">This is version ${version}. ` +
       `A newer version (v${latestVersion}) of this document exists — ` +
-      `<a href="${appPath(env, `/docs/${encodeURIComponent(latest.id)}`)}" aria-label="Open version ${latestVersion}">open it</a></aside>`;
+      `<a href="${appPath(env, `/docs/${await linkSegment(env, { kind: "document", id: latest.id })}`)}" aria-label="Open version ${latestVersion}">open it</a></aside>`;
   }
   const earlier = family.slice(1).filter((entry) => (entry.doc_version ?? 1) < version);
   if (version <= 1 || earlier.length === 0) return "";
+  const codes = await linkSegments(env, earlier.map((entry) => ({ kind: "document_version" as const, id: entry.id })), true);
   const items = earlier.map((entry) =>
-    `<li><a href="${appPath(env, `/docs/${encodeURIComponent(entry.id)}`)}">Version ${entry.doc_version ?? 1}</a> · ` +
+    `<li><a href="${appPath(env, `/docs/${codes.get(`document_version:${entry.id}`)}`)}">Version ${entry.doc_version ?? 1}</a> · ` +
     `<time datetime="${escHtml(entry.created_at)}">${escHtml(entry.created_at.slice(0, 10))}</time>` +
     `${entry.title === latest.title ? "" : ` · ${escHtml(entry.title)}`}</li>`).join("");
   return `<aside id="${versionBannerId()}" class="${editionSlug()}-version-current" aria-label="Document version">` +
@@ -438,7 +440,7 @@ export async function handleGetDoc(
   // string intact so magic-token links keep working.
   if (row.interactive === 1) {
     const url = new URL(request.url);
-    return Response.redirect(`${url.origin}${appPath(env, `/idoc/${docId}`)}${url.search}`, 302);
+    return Response.redirect(`${url.origin}${appPath(env, `/idoc/${requestLinkSegment(request, docId)}`)}${url.search}`, 302);
   }
 
   const rawHtml = await loadDocHtml(env, row);
@@ -677,11 +679,12 @@ export async function handlePreviewDoc(
   const workerUrl = env.WORKER_URL || new URL(request.url).origin;
   const title = row.title || "Shared document";
   const description = buildDescription(rawHtml, `Shared via ${editionProductName()}`);
-  const previewUrl = `${workerUrl}/p/${docId}${url.search}`;
+  const linkId = requestLinkSegment(request, docId);
+  const previewUrl = `${workerUrl}/p/${linkId}${url.search}`;
   const contentUrl = isPublic
-    ? `${workerUrl}/docs/${docId}`
-    : `${workerUrl}/docs/${docId}${url.search}`;
-  const ogImage = `${workerUrl}/p/${docId}/og.png${url.search}`;
+    ? `${workerUrl}/docs/${linkId}`
+    : `${workerUrl}/docs/${linkId}${url.search}`;
+  const ogImage = `${workerUrl}/p/${linkId}/og.png${url.search}`;
 
   const escTitle = escHtml(title);
   const escDesc = escHtml(description);
@@ -840,7 +843,7 @@ export async function buildShareDocData(
   if (row.team_id || editionWorkspaceSignInOnly(env)) {
     if (!await canReadResource(env, ownerUserId, row)) throw new Error("document not found");
     const origin = env.WORKER_URL || (requestUrl ? new URL(requestUrl).origin : "");
-    return { url: `${origin}/docs/${docId}`, title: row.title, expires_at: null, sharing_closes_at: null };
+    return { url: `${origin}/docs/${await linkSegment(env, { kind: "document", id: docId })}`, title: row.title, expires_at: null, sharing_closes_at: null };
   }
   const createdAt = parseCreatedAt(row.created_at);
   if (Date.now() > createdAt + ONE_WEEK) {
@@ -850,7 +853,7 @@ export async function buildShareDocData(
   const expiresAt = Date.now() + ONE_HOUR;
   const token = await signToken(docId, expiresAt, env.DOC_SHARE_SECRET ?? env.API_KEY);
   const workerUrl = env.WORKER_URL || (requestUrl ? new URL(requestUrl).origin : "");
-  const shareUrl = `${workerUrl}/p/${docId}?token=${token}&expires=${expiresAt}`;
+  const shareUrl = `${workerUrl}/p/${await linkSegment(env, { kind: "document_version", id: docId })}?token=${token}&expires=${expiresAt}`;
 
   return {
     url: shareUrl,

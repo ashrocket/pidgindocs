@@ -11,7 +11,7 @@ import { checkRateLimit } from "../ratelimit";
 import {
   ArtifactConflictError,
   ArtifactInputError,
-  artifactUrl,
+  artifactLink,
   deleteArtifact,
   getArtifactById,
   listArtifactVersions,
@@ -26,6 +26,7 @@ import {
   verifyArtifactToken,
   type ArtifactRow,
 } from "../artifacts/store";
+import { linkSegment, linkSegments, segmentKey } from "../short-links";
 import { artifactCsp, designSystemStyleBlock, wrapArtifactHtml } from "../artifacts/render";
 import { getDesignSystem } from "../design-systems";
 import { compileDesignSystem } from "../documents/design-system";
@@ -101,6 +102,9 @@ export async function handlePublishArtifact(
       userId,
     });
 
+    const segment = await linkSegment(env, { kind: "artifact", id: result.artifact.id });
+    const link = await artifactLink(env, result.artifact.id);
+
     // Omitted keeps legacy behavior; explicit false makes first-publish quiet
     // for child widgets; true forces a notification for any publish.
     const shouldPush = body.notify === true || (body.notify === undefined && result.created);
@@ -118,11 +122,11 @@ export async function handlePublishArtifact(
         ok: true,
         data: {
           id: result.artifact.id,
-          url: artifactUrl(env, result.artifact.id),
+          url: link,
           version: result.version,
           title: result.artifact.title,
           created: result.created,
-          artifact: serializeArtifact(env, result.artifact, userId),
+          artifact: serializeArtifact(env, result.artifact, userId, segment),
         },
       },
       result.created ? 201 : 200
@@ -170,10 +174,11 @@ export async function handleListArtifacts(request: Request, env: Env): Promise<R
     libraryTag: url.searchParams.get("library_tag") || undefined,
   });
 
+  const segments = await linkSegments(env, page.artifacts.map((a) => ({ kind: "artifact" as const, id: a.id })));
   return json({
     ok: true,
     data: {
-      artifacts: page.artifacts.map((a) => serializeArtifact(env, a, userId)),
+      artifacts: page.artifacts.map((a) => serializeArtifact(env, a, userId, segments.get(segmentKey("artifact", a.id)))),
       next_cursor: page.nextCursor,
       has_more: page.hasMore,
     },
@@ -197,7 +202,7 @@ export async function handleGetArtifactMeta(
   return json({
     ok: true,
     data: {
-      artifact: serializeArtifact(env, row, userId),
+      artifact: serializeArtifact(env, row, userId, await linkSegment(env, { kind: "artifact", id })),
       versions: versions.map(serializeArtifactVersion),
     },
   });
@@ -235,7 +240,7 @@ export async function handlePatchArtifact(
       if (!sharing || Object.keys(body).some(key => !["sharing", "team_id", "project_id"].includes(key))) return json({ ok: false, error: "invalid request" }, 400);
       try {
         await setResourceSharing(env, { actorId: userId, resourceType: "artifact", resourceId: id, sharing, teamId: body.team_id, projectId: body.project_id });
-        return json({ ok: true, data: { artifact: serializeArtifact(env, (await getArtifactById(env, id))!, userId) } });
+        return json({ ok: true, data: { artifact: serializeArtifact(env, (await getArtifactById(env, id))!, userId, await linkSegment(env, { kind: "artifact", id }, false)) } });
       } catch (error) {
         if (error instanceof SharingError) return json({ ok: false, error: error.message }, error.status);
         throw error;
@@ -249,7 +254,7 @@ export async function handlePatchArtifact(
       designSystem: body.design_system,
     });
     if (!row) return json({ ok: false, error: "artifact not found" }, 404);
-    return json({ ok: true, data: { artifact: serializeArtifact(env, row, userId) } });
+    return json({ ok: true, data: { artifact: serializeArtifact(env, row, userId, await linkSegment(env, { kind: "artifact", id }, false)) } });
   } catch (err) {
     if (err instanceof ArtifactInputError) {
       return json({ ok: false, error: err.message }, 400);
@@ -289,7 +294,7 @@ export async function handleShareArtifact(
 
   if (row.team_id && row.sharing !== "shared") return json({ ok: false, error: "Publish to team before sharing this private artifact link." }, 409);
   if (row.team_id || row.visibility === "public" || editionWorkspaceSignInOnly(env)) {
-    return json({ ok: true, data: { url: artifactUrl(env, id), expires_at: null, requires_login: !!row.team_id || editionWorkspaceSignInOnly(env) } });
+    return json({ ok: true, data: { url: await artifactLink(env, id), expires_at: null, requires_login: !!row.team_id || editionWorkspaceSignInOnly(env) } });
   }
 
   const expiresAt = Date.now() + ONE_HOUR_MS;
@@ -297,7 +302,7 @@ export async function handleShareArtifact(
   return json({
     ok: true,
     data: {
-      url: `${artifactUrl(env, id)}?token=${token}&expires=${expiresAt}`,
+      url: `${await artifactLink(env, id)}?token=${token}&expires=${expiresAt}`,
       expires_at: Math.floor(expiresAt / 1000),
     },
   });

@@ -1,7 +1,7 @@
 import { editionAccessError, editionTicketResolver, reserveEditionUsage, UsageRefused, editionPublicSite } from "../edition-hooks";
 import { DocumentAudienceError } from "../document-audience";
 import { canReadResource } from "../workspace-access";
-import { loadBoardDocumentDetails } from "../board-documents";
+import { loadBoardDocumentDetails, withShortDocumentLink } from "../board-documents";
 import {
   AGENT_BOARD_MEDIA_TYPE,
   AGENT_BOARD_PROTOCOLS,
@@ -275,7 +275,7 @@ export async function handleGetAgentBoard(
       ok: true,
       data: {
         entries: page.entries.map((entry) => ({
-          ...agentBoardEntryJson(entry),
+          ...withShortDocumentLink(agentBoardEntryJson(entry), documents.get(entry.id)),
           document_url: documents.get(entry.id)?.document_url ?? null,
           ticket: ticketJson(boardTicket(documents.has(entry.id) ? documents.get(entry.id)!.original_reference : entry.reference,
             documents.get(entry.id)?.body ?? entry.body, rules, extraTickets)),
@@ -316,9 +316,9 @@ export async function handlePostAgentBoard(
     const clientMessageId = validateIdempotencyKey(request.headers.get("Idempotency-Key"));
     const result = await createAgentBoardEntry(env, { principal, post, clientMessageId, ctx });
     const headers = new Headers(boardHeaders(AGENT_BOARD_MEDIA_TYPE));
-    const document = (await loadBoardDocumentDetails(env, [result.entry.id])).get(result.entry.id);
+    const document = (await loadBoardDocumentDetails(env, [result.entry.id], true)).get(result.entry.id);
     if (document) {
-      const documentId = document.document_url.split("/").pop();
+      const documentId = document.document_id;
       const agentUrl = `${env.WORKER_URL.replace(/\/$/, "")}/api/agent-board/${encodeURIComponent(projectId)}/documents/${documentId}`;
       headers.set("Link", `<${document.document_url}>; rel="alternate"; type="text/html", <${agentUrl}>; rel="related"; type="text/html"`);
     }
@@ -381,8 +381,8 @@ async function handlePersonBoardPost(request: Request, env: Env, projectId: stri
       clientMessageId: clientId ?? request.headers.get("Idempotency-Key") ?? "",
       ctx,
     });
-    const document = (await loadBoardDocumentDetails(env, [result.entry.id])).get(result.entry.id);
-    return respond({ ok: true, data: { entry: { ...agentBoardEntryJson(result.entry), document_url: document?.document_url ?? null }, duplicate: result.duplicate } },
+    const document = (await loadBoardDocumentDetails(env, [result.entry.id], true)).get(result.entry.id);
+    return respond({ ok: true, data: { entry: { ...withShortDocumentLink(agentBoardEntryJson(result.entry), document), document_url: document?.document_url ?? null }, duplicate: result.duplicate } },
       result.duplicate ? 200 : 201);
   } catch (error) {
     return boardError(error);
@@ -615,7 +615,7 @@ export async function handleBulletinPostAction(
     if (!entry) return json({ ok: false, error: "post not found" }, 404);
     const read = actorRef.startsWith("user:") ? (await readEntryIds(env, actorRef, [entry.id])).has(entry.id) : undefined;
     const document = (await loadBoardDocumentDetails(env, [entry.id])).get(entry.id);
-    return respond({ ok: true, data: { entry: { ...agentBoardEntryJson(entry), document_url: document?.document_url ?? null,
+    return respond({ ok: true, data: { entry: { ...withShortDocumentLink(agentBoardEntryJson(entry), document), document_url: document?.document_url ?? null,
       ticket: ticketJson(boardTicket(document ? document.original_reference : entry.reference, document?.body ?? entry.body, bulletinRules(env), await editionTicketResolver(env, entry.team_id))),
       ...(read === undefined ? {} : { read }) } } });
   } catch (error) {

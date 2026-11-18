@@ -22,7 +22,7 @@ import {
   isLegacyAudioId,
   LEGACY_ID_PREFIX,
   newAudioId,
-  serializeAudioRow,
+  serializeAudioRowLinked,
   updateAudioRow,
   type AudioItem,
   type AudioRow,
@@ -220,7 +220,7 @@ export async function storeAudioUpload(env: Env, userId: string, input: UploadIn
   }
   const row = await getAudioRow(env, userId, id);
   if (!row) throw new Error("audio row missing after insert");
-  return serializeAudioRow(row);
+  return serializeAudioRowLinked(env, row);
 }
 
 // ---------------- fetch by URL ----------------
@@ -381,7 +381,7 @@ export async function createNarration(env: Env, userId: string, input: Narration
 
   const row = await getAudioRow(env, userId, id);
   if (!row) throw new Error("audio row missing after insert");
-  return serializeAudioRow(row);
+  return serializeAudioRowLinked(env, row);
 }
 
 // ---------------- read, rename, delete ----------------
@@ -390,13 +390,14 @@ export type AudioLookup =
   | { legacy: false; row: AudioRow; item: AudioItem }
   | { legacy: true; item: AudioItem; audioKey: string | null; transcriptKey: string };
 
-export async function lookupAudio(env: Env, userId: string, id: string): Promise<AudioLookup | null> {
+/** `mint` is false for stream and transcript reads, which don't hand out the link. */
+export async function lookupAudio(env: Env, userId: string, id: string, mint = true): Promise<AudioLookup | null> {
   if (isLegacyAudioId(id)) {
     const found = await getLegacyBriefing(env, userId, id.slice(LEGACY_ID_PREFIX.length));
     return found ? { legacy: true, item: found.item, audioKey: found.audio_key, transcriptKey: found.transcript_key } : null;
   }
   const row = await getAudioRow(env, userId, id);
-  return row ? { legacy: false, row, item: serializeAudioRow(row) } : null;
+  return row ? { legacy: false, row, item: await serializeAudioRowLinked(env, row, mint) } : null;
 }
 
 export async function renameAudio(env: Env, userId: string, id: string, title: unknown): Promise<AudioItem | null> {
@@ -406,7 +407,7 @@ export async function renameAudio(env: Env, userId: string, id: string, title: u
   if (!row) return null;
   await updateAudioRow(env, userId, id, { title: cleanAudioTitle(title) });
   const next = await getAudioRow(env, userId, id);
-  return next ? serializeAudioRow(next) : null;
+  return next ? serializeAudioRowLinked(env, next) : null;
 }
 
 // Removes the item, its R2 objects and its favorite. A briefing (id "commute:...")

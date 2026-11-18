@@ -1,6 +1,6 @@
 import { updateMessagePriority } from "../messages/priority";
 import { LIBRARY_TOOLS, callLibraryTool } from "../library";
-import { editionCallWorkspaceTool, editionLibraryEnabled, editionWorkspaceTools, MentionRejected, UsageRefused, editionPublicSite, editionWorkspaceSignInOnly } from "../edition-hooks";
+import { editionCallWorkspaceTool, editionLibraryEnabled, editionWorkspaceTools, MentionRejected, ProjectNameRejected, UsageRefused, editionPublicSite, editionWorkspaceSignInOnly } from "../edition-hooks";
 import { editionMcpWriteRefusal, editionProductName, editionSingleWorkspaceRefusal, editionTeamCreationError, editionWireFormat } from "../edition-hooks";
 import { clientToolName, clientToolText, productSchemaText, sourceToolName } from "../wire-names";
 import { chatOpenedText, mcpInstructions } from "../mcp-text";
@@ -25,7 +25,7 @@ import { buildShareDocData } from "./docs";
 import {
   ArtifactConflictError,
   ArtifactInputError,
-  artifactUrl,
+  artifactLink,
   deleteArtifact,
   getArtifactById,
   listArtifactVersions,
@@ -82,6 +82,7 @@ import type { DocumentFormat } from "../audio/text";
 import { agentBoardTools, AGENT_ONLY_BOARD_TOOLS, callAgentBoardTool, HELP_TOOL_NAME } from "./mcp-agent-board";
 import { callEventTool, eventToolsFor, isEventTool } from "../events/mcp-tools";
 import { appHref } from "../base-path";
+import { linkSegment, linkSegments, resolveItemArgs, segmentKey } from "../short-links";
 
 type JsonRpcId = string | number | null;
 
@@ -186,6 +187,7 @@ const TOOLS: McpTool[] = [
         name: { type: "string", minLength: 1 },
         slug: { type: "string" },
         description: { type: "string" },
+        short_name: { type: "string", description: "Optional short name for /prj/<name>/: up to 6 letters or digits. Defaults to the project's initials." },
       },
       required: ["team_id", "name"],
       additionalProperties: false,
@@ -1069,13 +1071,20 @@ async function callTool(
       if (name instanceof Response) {
         return toolResult("Invalid project name.", { error: '"name" must be a non-empty string' }, true);
       }
-      const project = await createProject(env, {
-        teamId,
-        userId,
-        name,
-        slug: optionalString(args, "slug") || undefined,
-        description: optionalString(args, "description"),
-      });
+      let project;
+      try {
+        project = await createProject(env, {
+          teamId,
+          userId,
+          name,
+          slug: optionalString(args, "slug") || undefined,
+          description: optionalString(args, "description"),
+          shortName: optionalString(args, "short_name") || undefined,
+        });
+      } catch (error) {
+        if (error instanceof ProjectNameRejected) return toolResult("Invalid short name.", { error: error.message }, true);
+        throw error;
+      }
       if (!project) {
         return toolResult("Forbidden.", { error: "forbidden" }, true);
       }
@@ -1475,11 +1484,13 @@ async function callTool(
           else await push;
         }
 
+        const segment = await linkSegment(env, { kind: "artifact", id: result.artifact.id });
+        const link = await artifactLink(env, result.artifact.id);
         return toolResult(
-          `${result.created ? "Published" : "Updated"} artifact "${result.artifact.title}" (v${result.version}): ${artifactUrl(env, result.artifact.id)}`,
+          `${result.created ? "Published" : "Updated"} artifact "${result.artifact.title}" (v${result.version}): ${link}`,
           {
-            artifact: serializeArtifact(env, result.artifact),
-            url: artifactUrl(env, result.artifact.id),
+            artifact: serializeArtifact(env, result.artifact, undefined, segment),
+            url: link,
             version: result.version,
             created: result.created,
           }
@@ -1514,8 +1525,9 @@ async function callTool(
         role:
           roleArg === "page" || roleArg === "widget" || roleArg === "all" ? roleArg : "page",
       });
+      const segments = await linkSegments(env, page.artifacts.map((a) => ({ kind: "artifact" as const, id: a.id })));
       return toolResult(`Returned ${page.artifacts.length} artifact(s).`, {
-        artifacts: page.artifacts.map((a) => serializeArtifact(env, a)),
+        artifacts: page.artifacts.map((a) => serializeArtifact(env, a, undefined, segments.get(segmentKey("artifact", a.id)))),
         next_cursor: page.nextCursor,
         has_more: page.hasMore,
       });
@@ -1533,7 +1545,7 @@ async function callTool(
       const versions = await listArtifactVersions(env, idArg);
       return toolResult(`Loaded artifact "${row.title}" (v${row.current_version}).`, {
         found: true,
-        artifact: serializeArtifact(env, row),
+        artifact: serializeArtifact(env, row, undefined, await linkSegment(env, { kind: "artifact", id: idArg })),
         versions: versions.map(serializeArtifactVersion),
       });
     }
@@ -1548,21 +1560,22 @@ async function callTool(
         return toolResult(`Artifact ${idArg} was not found.`, { id: idArg, found: false }, true);
       }
       if (row.team_id && row.sharing !== "shared") return toolResult("Publish to team before sharing this private artifact link.", { id: idArg, sharing: "private" }, true);
+      const link = await artifactLink(env, idArg);
       if (row.team_id || editionWorkspaceSignInOnly(env)) {
-        return toolResult(`Shared workspace artifact: ${artifactUrl(env, idArg)}`, {
-          url: artifactUrl(env, idArg), expires_at: null, requires_login: true,
+        return toolResult(`Shared workspace artifact: ${link}`, {
+          url: link, expires_at: null, requires_login: true,
         });
       }
       if (row.visibility === "public") {
-        return toolResult(`Artifact is public: ${artifactUrl(env, idArg)}`, {
-          url: artifactUrl(env, idArg),
+        return toolResult(`Artifact is public: ${link}`, {
+          url: link,
           expires_at: null,
         });
       }
       const expiresAt = Date.now() + 60 * 60 * 1000;
       const token = await signArtifactToken(idArg, expiresAt, env.DOC_SHARE_SECRET ?? env.API_KEY);
       return toolResult(`Generated a one-hour share link for "${row.title}".`, {
-        url: `${artifactUrl(env, idArg)}?token=${token}&expires=${expiresAt}`,
+        url: `${link}?token=${token}&expires=${expiresAt}`,
         expires_at: Math.floor(expiresAt / 1000),
       });
     }
@@ -2519,7 +2532,7 @@ export async function handleMcp(
         return jsonRpcResult(id, await callAgentBoardTool(toolName, rawArguments, request, env, authedAgent ? undefined : authedUser?.userId));
       }
       if (!authedUser) return jsonRpcError(id, { code: -32601, message: "Agent credentials can only use project board and Teams inclusion tools" });
-      const result = await callTool(env, toolName, rawArguments, request.url, authedUser.userId, ctx);
+      const result = await callTool(env, toolName, await resolveItemArgs(env, toolName, rawArguments, authedUser.userId), request.url, authedUser.userId, ctx);
       return jsonRpcResult(id, result);
     }
 
