@@ -1,4 +1,4 @@
-import { Marked, type RendererObject, type Tokens } from "marked";
+import { Marked, type RendererObject, type Token, type Tokens } from "marked";
 import { editionProductIdentity } from "../edition-hooks";
 import {
   CompiledDesignSystem,
@@ -40,12 +40,16 @@ function decodeEntities(value: string): string {
 
 // The document chrome owns <h1> (the title), so markdown headings shift down
 // one level: # → h2, ## → h3, … capped at h6.
-function demoteHeadings() {
-  return (token: { type: string; depth?: number }) => {
-    if (token.type === "heading" && typeof token.depth === "number") {
-      token.depth = Math.min(token.depth + 1, 6);
-    }
-  };
+// Shift every heading down one level, since the page chrome owns the h1. This walks
+// the tokens once. marked's walkTokens option is avoided on purpose: it concatenates
+// a growing array for each token, so its cost grows with the square of the length.
+function demoteHeadings(tokens: Token[]): Token[] {
+  for (const token of tokens) {
+    if (token.type === "heading") token.depth = Math.min(token.depth + 1, 6);
+    if (token.type === "list") demoteHeadings(token.items);
+    else if ("tokens" in token && Array.isArray(token.tokens)) demoteHeadings(token.tokens);
+  }
+  return tokens;
 }
 
 const SAFE_LINK = /^(https?:|mailto:)/i;
@@ -79,7 +83,7 @@ function untrustedRenderer(): RendererObject {
 }
 
 export function renderMarkdownContent(markdown: string, opts: { untrusted?: boolean } = {}): string {
-  const marked = new Marked({ gfm: true, walkTokens: demoteHeadings() });
+  const marked = new Marked({ gfm: true, hooks: { processAllTokens: demoteHeadings } });
   if (opts.untrusted) {
     marked.use({ renderer: untrustedRenderer() });
     return marked.parse(markdown, { async: false }) as string;

@@ -129,4 +129,30 @@ describe("typesetDocument", () => {
     expect(html).toContain("border-radius: 8px");
     expect(html).not.toContain("#F6EEDF");
   });
+
+  it("demotes headings inside quotes and lists, and stops at h6", () => {
+    const html = typesetDocument({
+      ...base,
+      markdown: ["> # Quoted", "", "- item", "", "  ## Listed", "", "###### Six"].join("\n"),
+    });
+    expect(html).toMatch(/<h2[^>]*>Quoted<\/h2>/);
+    expect(html).toMatch(/<h3[^>]*>Listed<\/h3>/);
+    expect(html).toMatch(/<h6[^>]*>Six<\/h6>/);
+  });
+
+  it("typesets a 1.5 MB document in time that grows linearly with its size", () => {
+    const paragraph = (k: number) =>
+      `Paragraph ${k}. ` + `The quick brown fox jumps over the lazy dog, with **bold** and _italic_ text and a [link](https://example.com/${k}). `.repeat(6);
+    const section = (i: number) =>
+      [`## Section ${i}`, ...Array.from({ length: 6 }, (_, k) => paragraph(k)),
+        "| A | B | C | D |\n|---|---|---|---|\n" + Array.from({ length: 25 }, (_, r) => `| ${r} | value ${r} | \`code ${r}\` | ${r * 3} |`).join("\n"),
+        "```ts\n" + Array.from({ length: 30 }, (_, k) => `const v${k} = compute(${k});`).join("\n") + "\n```"].join("\n\n");
+    const parts: string[] = [];
+    for (let i = 0, size = 0; size < 1.5 * 1024 * 1024; i++) { const s = section(i); parts.push(s); size += s.length; }
+    const started = performance.now();
+    const html = typesetDocument({ ...base, markdown: parts.join("\n\n") });
+    // Heading demotion through marked's walkTokens copied a growing array per token: about 5 s here before.
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(html).toMatch(/<h3[^>]*>Section 0<\/h3>/);
+  });
 });
