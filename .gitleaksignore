@@ -1,0 +1,3 @@
+# Test fixtures: dummy plaintext values and an environment variable name, not secrets.
+server/src/__tests__/microsoft365.test.ts:generic-api-key:85
+server/src/__tests__/microsoft365.test.ts:generic-api-key:86

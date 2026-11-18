@@ -1,6 +1,9 @@
-# Portable example configuration for a PidginDocs instance.
+# Portable example configuration for a PidginDocs instance. It runs PidginCore
+# (server/src/core) and is the default config. Replace the placeholder resource
+# names and IDs before use. The previous entry (server/legacy) is kept in
+# wrangler.legacy.toml and runs with `--config wrangler.legacy.toml`.
 name = "pidgindocs"
-main = "legacy/index.ts"
+main = "src/core/worker.ts"
 compatibility_date = "2026-05-28"
 compatibility_flags = ["nodejs_compat"]
 
@@ -8,6 +11,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "pidgindocs-db"
 database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "src/core/migrations"
 
 [[r2_buckets]]
 binding = "DOCS"
@@ -29,12 +33,23 @@ max_retries = 3
 dead_letter_queue = "pidgindocs-enhance-dlq"
 
 [[durable_objects.bindings]]
+name = "TEAM_EVENTS"
+class_name = "TeamEventsDO"
+
+[[durable_objects.bindings]]
 name = "MATRIX_SYNC"
 class_name = "MatrixSyncDO"
 
+# Durable Object migrations are append-only. v1 matches wrangler.legacy.toml, so a
+# Worker first deployed from that config keeps working. Never edit or drop a tag
+# that was already applied; add a new, later tag for each new class.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["MatrixSyncDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["TeamEventsDO"]
 
 [vars]
 ENVIRONMENT = "development"
@@ -42,16 +57,16 @@ WORKER_URL = "https://pidgindocs.example.workers.dev"
 MAIL_FROM = "PidginDocs <pidgindocs@example.com>"
 
 [triggers]
-crons = ["0 3 * * *", "*/5 * * * *"]
+crons = ["17 * * * *", "43 3 * * *"]
 
 [[rules]]
 type = "Data"
-globs = ["**/*.woff", "**/*.ttf", "**/*.otf"]
+globs = ["**/*.woff", "**/*.ttf", "**/*.otf", "**/*.jpg", "**/*.png", "**/*.mp4"]
 fallthrough = true
 
 [[rules]]
-type = "Data"
-globs = ["**/*.jpg"]
+type = "Text"
+globs = ["**/*.vtt"]
 fallthrough = true
 
 [[rules]]

@@ -13,7 +13,7 @@ This guide is a starting point for a single-owner Cloudflare Worker installation
 
 ## Create resources
 
-1. Copy `server/wrangler.toml` to a private local config if you need to change its bindings.
+1. Copy `server/wrangler.toml` (the PidginCore entry) to a private local config if you need to change its bindings. The previous entry in `server/legacy/` has its own template, `server/wrangler.legacy.toml`, with its own migrations in `server/migrations`; do not mix the two on one database.
 2. Create a D1 database, R2 bucket, KV namespace, queue and dead-letter queue, and update the corresponding IDs/names in your config.
 3. Set `WORKER_URL` to the HTTPS Worker URL Cloudflare assigns, or to your own domain after configuring it.
 4. Keep API and provider credentials in `.dev.vars` for local work or Cloudflare Worker secrets for deployment. Never commit those values.

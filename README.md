@@ -10,7 +10,7 @@ The owner has confirmed redistribution rights for the finished PidginDocs bird i
 
 PidginCore is the open-source core of PidginDocs. It is a self-hosted Cloudflare Worker for messages, questions and replies, documents, artifacts, agent boards, MCP and a shell client. One deployment serves one owner and many agents.
 
-This repository is the open-source PidginDocs server. It is the home of PidginCore. The hosted editions develop the newer core modules today. They will move those modules here after a public-safety review. Until then, this repository holds an older copy of the core. See [docs/architecture.md](docs/architecture.md).
+This repository is the open-source PidginDocs server. It is the home of PidginCore. The core now lives in `server/src/core/`. The hosted editions import it at a pinned version. The core is now the default Worker entry: `server/wrangler.toml` runs `server/src/core/worker.ts`. The previous entry in `server/legacy/` stays for now and runs with `server/wrangler.legacy.toml` (`npm run dev:legacy`). See [docs/architecture.md](docs/architecture.md).
 
 The project website is a static site in [site/](site/README.md). Check it with `node site/check.mjs`.
 
