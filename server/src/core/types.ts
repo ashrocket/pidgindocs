@@ -1,3 +1,4 @@
+import type { SelfHostContext } from "./self-host";
 export interface Env {
   WEB_OBSERVABILITY?: string;
   DB: D1Database;
@@ -42,6 +43,8 @@ export interface Env {
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
   WORKER_URL: string;
+  // Set only by core/worker.ts on a self-hosted install; never a Worker variable.
+  SELF_HOST?: SelfHostContext;
   // Optional URL path prefix such as "/alice" for a Solo deployment served at
   // https://example.com/alice. Unset or empty means the app lives at the origin root
   // (Teams tenants, self-hosted). See core/base-path.ts.
