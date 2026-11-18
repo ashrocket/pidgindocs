@@ -3,7 +3,7 @@
 // be installed after this module loads, so every read goes through the functions below.
 import { editionProductName, editionTicketHelpText, editionWireFormat } from "../edition-hooks";
 import { clientToolText } from "../wire-names";
-import { HELP_ARTICLES, HELP_LEAD_ANCHOR, helpArticleChunks, slugifyHeading, type HelpArticle, type HelpChunk, type HelpSection } from "./corpus";
+import { HELP_LEAD_ANCHOR, helpArticles, helpCorpusVersion, helpArticleChunks, slugifyHeading, type HelpArticle, type HelpChunk, type HelpSection } from "./corpus";
 
 // The shell client's script is named after the product's lowercase slug, as the
 // edition ships it (for example scripts/<slug>.sh).
@@ -66,9 +66,9 @@ let current: EditionView | undefined;
 
 /** The articles and chunks for the edition in force now; rebuilt only when its names change. */
 function view(): EditionView {
-  const key = JSON.stringify([editionProductName(), editionWireFormat(), editionTicketHelpText()]);
+  const key = JSON.stringify([editionProductName(), editionWireFormat(), editionTicketHelpText(), helpCorpusVersion()]);
   if (current?.key !== key) {
-    const articles = Object.freeze(HELP_ARTICLES.map(viewArticle));
+    const articles = Object.freeze(helpArticles().map(viewArticle));
     current = {
       key,
       articles,
