@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2",
-    "jose": "^6.2.13",
+    "jose": "^6.2.17",
     "marked": "^18.1.1",
     "satori": "^0.63.2"
   },
