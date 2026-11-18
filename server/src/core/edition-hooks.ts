@@ -4,6 +4,7 @@ import type { OAuthTokenRecord } from "./oauth-tokens";
 // (the hosted edition's installer, imported first by its Worker entry). Each deployment
 // serves one customer, so these hooks never hold two customers' settings. Without
 // an edition (self-hosted PidginCore) every check below allows the action.
+import type { ShortLinkKind, ShortLinkRef } from "./short-links";
 import type { Env, WorkspaceResourceType } from "./types";
 import { coreLoginPage } from "./web/login";
 import { appPath } from "./base-path";
@@ -54,6 +55,12 @@ export interface ApiKeyAccountSql {
 
 /** A mention in a post or comment was refused (for example, the person is not a team member). Editions extend it. */
 export class MentionRejected extends Error {}
+
+/** A project name was refused (malformed, reserved or taken). Editions that name projects throw it. */
+export class ProjectNameRejected extends Error {
+  /** 409 for a taken name, 422 for an invalid one. */
+  constructor(message: string, readonly status: 409 | 422 = 422) { super(message); this.name = "ProjectNameRejected"; }
+}
 
 /** A mention to store once its resource exists. */
 export interface MentionRecord {
@@ -245,6 +252,14 @@ export interface EditionHooks {
   resolveMentions(env: Env, teamId: string, authorId: string, text: string): Promise<string[]>;
   /** Stores mentions once their post or comment exists. */
   recordMentions(env: Env, input: MentionRecord): Promise<void>;
+  /** Short link codes by `${kind}:${id}`; with `mint` it creates missing ones. Core has none, so links keep the UUID. */
+  shortCodes(env: Env, refs: readonly ShortLinkRef[], mint: boolean): Promise<Map<string, string>>;
+  /** The item that a short link code names for this viewer, or null. With `readableBy`, null also when that user can't read the item. */
+  resolveShortCode(env: Env, code: string, viewerId: string | null, options?: { readableBy?: string }): Promise<{ kind: ShortLinkKind; id: string } | null>;
+  /** The short name of a project for its link, or null. With `mint` it assigns one when missing. */
+  projectName(env: Env, projectId: string, mint: boolean): Promise<string | null>;
+  /** Statements, run in the same batch as a project insert, that store its name. Throws ProjectNameRejected for a refused name. */
+  projectNameStatements(env: Env, input: { projectId: string; slug: string; requested?: string }): Promise<D1PreparedStatement[]>;
   /** The sign-in page. */
   loginPage(env: Env, error?: string, next?: string): Promise<Response>;
   /** True when this edition does not serve the request: the path of a feature it does not have. Core default: false. */
@@ -308,6 +323,10 @@ const PIDGIN_CORE_DEFAULTS: EditionHooks = {
   libraryEnabled: () => true,
   contentStoreStatements: () => [],
   replyStoreStatements: () => [],
+  shortCodes: async () => new Map(),
+  resolveShortCode: async () => null,
+  projectName: async () => null,
+  projectNameStatements: async () => [],
   ticketResolver: async () => null,
   ticketHelpText: () => "",
   helpCorpus: () => ({ version: "none", sources: [] }),
@@ -423,6 +442,10 @@ export const editionAccountIdentities = (env: Env, user: { id: string; email: st
 export const editionLibraryEnabled = (env: Env): boolean => hooks.libraryEnabled(env);
 export const editionContentStoreStatements: EditionHooks["contentStoreStatements"] = (env,input) => hooks.contentStoreStatements(env,input);
 export const editionReplyStoreStatements: EditionHooks["replyStoreStatements"] = (env,input) => hooks.replyStoreStatements(env,input);
+export const editionShortCodes: EditionHooks["shortCodes"] = (env,refs,mint) => hooks.shortCodes(env,refs,mint);
+export const editionResolveShortCode: EditionHooks["resolveShortCode"] = (env,code,viewerId,options) => hooks.resolveShortCode(env,code,viewerId,options);
+export const editionProjectName: EditionHooks["projectName"] = (env,projectId,mint) => hooks.projectName(env,projectId,mint);
+export const editionProjectNameStatements: EditionHooks["projectNameStatements"] = (env,input) => hooks.projectNameStatements(env,input);
 export const editionOnBoardPost = (env: Env, entry: unknown): Promise<void> => hooks.onBoardPost(env, entry);
 export const editionAfterSignIn = (env: Env, input: { userId: string; email: string }): Promise<void> => hooks.afterSignIn(env, input);
 export const editionTicketResolver = (env: Env, teamId: string | undefined): Promise<EditionTicketResolver | null> => hooks.ticketResolver(env, teamId);

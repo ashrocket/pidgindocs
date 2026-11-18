@@ -260,7 +260,7 @@ export async function handleAudioStream(request: Request, env: Env, rawId: strin
   const userId = await resolveCallerUserId(request, env);
   if (!userId) return unauthorized();
   const id = decodeAudioId(rawId);
-  const found = id ? await lookupAudio(env, userId, id) : null;
+  const found = id ? await lookupAudio(env, userId, id, false) : null;
   if (!found) return fail("audio not found", 404);
   const key = found.legacy ? found.audioKey : found.row.audio_key;
   if (!key) return fail("audio not found", 404);
@@ -271,7 +271,7 @@ export async function handleAudioTranscript(request: Request, env: Env, rawId: s
   const userId = await resolveCallerUserId(request, env);
   if (!userId) return unauthorized();
   const id = decodeAudioId(rawId);
-  const found = id ? await lookupAudio(env, userId, id) : null;
+  const found = id ? await lookupAudio(env, userId, id, false) : null;
   if (!found) return fail("audio not found", 404);
   const key = found.legacy ? found.transcriptKey : found.row.transcript_key;
   if (!key || !found.item.transcript_url) return fail("transcript not found", 404);

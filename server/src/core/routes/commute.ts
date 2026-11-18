@@ -15,6 +15,7 @@ import {
 import type { Env } from "../types";
 import { json } from "../utils";
 import { latestCommutePage } from "../web/index";
+import { linkSegment } from "../short-links";
 import { editionLoginPage } from "../edition-hooks";
 import { withNavShell } from "../web/nav-shell";
 import { theme } from "../web/theme";
@@ -152,5 +153,6 @@ export async function handleOpenLatestCommute(
     transcript = await obj.text();
   }
 
-  return withNavShell(latestCommutePage(briefing, transcript, basePath(env)), { accent: theme.primary, userId, base: basePath(env) });
+  const sourceSegment = await linkSegment(env, { kind: "document", id: briefing.source_message_id }, false);
+  return withNavShell(latestCommutePage(briefing, transcript, basePath(env), sourceSegment), { accent: theme.primary, userId, base: basePath(env) });
 }

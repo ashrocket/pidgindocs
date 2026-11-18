@@ -4,6 +4,7 @@ import {
   WorkspaceAccessError, type Sharing,
 } from "../workspace-access";
 import type { Env } from "../types";
+import { linkSegment } from "../short-links";
 import { runGovernedContentCleanup } from "../governed-content-cleanup";
 import { getDesignSystem } from "../design-systems";
 import {
@@ -157,10 +158,15 @@ export function artifactUrl(env: Env, id: string): string {
   return `${env.WORKER_URL}/a/${id}`;
 }
 
+/** The link handed out for an artifact: the short code, or the UUID if none can be had. Mints by default. */
+export async function artifactLink(env: Env, id: string, mint = true): Promise<string> {
+  return `${env.WORKER_URL}/a/${await linkSegment(env, { kind: "artifact", id }, mint)}`;
+}
+
 // The wire shape both the iOS client and MCP structured output consume.
 /** `viewerId` adds the viewer-relative `is_owner`, which clients use to offer
  * owner-only actions such as Publish and Make private. */
-export function serializeArtifact(env: Env, row: ArtifactRow, viewerId?: string | null) {
+export function serializeArtifact(env: Env, row: ArtifactRow, viewerId?: string | null, segment?: string) {
   return {
     id: row.id,
     ...(row.library ? { library: row.library } : {}),
@@ -176,7 +182,7 @@ export function serializeArtifact(env: Env, row: ArtifactRow, viewerId?: string 
     capabilities: parseCapabilities(row.capabilities),
     created_at: toUnixSeconds(row.created_at),
     updated_at: toUnixSeconds(row.updated_at),
-    url: artifactUrl(env, row.id),
+    url: artifactUrl(env, segment ?? row.id),
     instance: {
       session_id: row.instance_session_id,
       project: row.instance_project,

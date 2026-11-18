@@ -211,7 +211,9 @@ const SHELL_JS = String.raw`
     return fetch(path, { method: method, credentials: "same-origin", headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok || j.ok === false) throw new Error(j.error || "Request failed"); return j; }); });
   }
-  function rebuildMap() { favMap = {}; favs.forEach(function (f) { favMap[f.key] = f; }); }
+  /* A star can be keyed by the link's last segment (a short code), while a favorite is keyed by item id. */
+  function segKey(f) { var last = String(f.url || "").split("?")[0].split("/").filter(Boolean).pop(); return last ? f.kind + ":" + last : ""; }
+  function rebuildMap() { favMap = {}; favs.forEach(function (f) { favMap[f.key] = f; var k = segKey(f); if (k && !favMap[k]) favMap[k] = f; }); }
   function loadFavs(force) {
     if (favPromise) return favPromise;
     if (favState === "ready" && !force) return Promise.resolve();
@@ -241,13 +243,13 @@ const SHELL_JS = String.raw`
     busy[key] = true;
     var was = btn.getAttribute("aria-pressed") === "true";
     var before = favs.slice();
-    if (was) { favs = favs.filter(function (f) { return f.key !== key; }); }
+    if (was) { favs = favs.filter(function (f) { return f.key !== key && segKey(f) !== key; }); }
     else { favs = favs.concat([{ kind: kind, item_id: id, key: key, title: title, url: "", position: 1e9 }]); }
     rebuildMap(); paintAll();
     var done = was ? request("DELETE", APP_BASE + "/api/favorites/" + encodeURIComponent(kind) + "/" + encodeURIComponent(id))
                    : request("PUT", APP_BASE + "/api/favorites/" + encodeURIComponent(kind) + "/" + encodeURIComponent(id), { title: title });
     done.then(function (j) {
-      if (was) favs = favs.filter(function (f) { return f.key !== key; });
+      if (was) favs = favs.filter(function (f) { return f.key !== key && segKey(f) !== key; });
       else if (j.data && j.data.favorite) {
         var found = false;
         favs = favs.map(function (f) { if (f.key === key) { found = true; return j.data.favorite; } return f; });

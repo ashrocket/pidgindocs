@@ -9,6 +9,7 @@ import type {
   ResolvedMicrosoft365Config,
 } from "./types";
 import { getDestinationConfigValue } from "./store";
+import { linkSegment } from "../short-links";
 
 async function loadAndDecryptConfig(
   env: Env,
@@ -92,7 +93,7 @@ function truncate(value: string, maxLength: number): string {
     : `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
-function markdownBody(env: Env, envelope: MessageEnvelope): string {
+async function markdownBody(env: Env, envelope: MessageEnvelope): Promise<string> {
   const instance = envelope.payload.instance;
   const lines = [
     `# ${envelope.payload.title}`,
@@ -114,7 +115,7 @@ function markdownBody(env: Env, envelope: MessageEnvelope): string {
   if (workerUrl) {
     lines.push("", `${editionProductName()} message ID: ${envelope.id}`, `Inbox: ${workerUrl}/`);
     if (envelope.payload.type === "document") {
-      lines.push(`Document: ${workerUrl}/docs/${envelope.id}`);
+      lines.push(`Document: ${workerUrl}/docs/${await linkSegment(env, { kind: "document", id: envelope.id })}`);
     }
   }
   return lines.join("\n");
@@ -193,7 +194,7 @@ async function deliverToOneDrive(
 ): Promise<string> {
   const isDoc = envelope.payload.type === "document";
   let contentType = "text/markdown; charset=utf-8";
-  let body = markdownBody(env, envelope);
+  let body = await markdownBody(env, envelope);
   let ext = "md";
 
   if (isDoc) {
@@ -210,7 +211,7 @@ async function deliverToOneDrive(
   return `onedrive: uploaded ${fileName}`;
 }
 
-function buildAdaptiveCard(env: Env, envelope: MessageEnvelope): string {
+async function buildAdaptiveCard(env: Env, envelope: MessageEnvelope): Promise<string> {
   const instance = envelope.payload.instance;
   const workerUrl = (env.WORKER_URL || "").replace(/\/+$/, "");
 
@@ -252,7 +253,7 @@ function buildAdaptiveCard(env: Env, envelope: MessageEnvelope): string {
       actions.push({
         type: "Action.OpenUrl",
         title: "View Doc",
-        url: `${workerUrl}/docs/${envelope.id}`,
+        url: `${workerUrl}/docs/${await linkSegment(env, { kind: "document", id: envelope.id })}`,
       });
     }
   }
@@ -290,7 +291,7 @@ async function deliverToTeams(
   envelope: MessageEnvelope,
   config: ResolvedMicrosoft365Config,
 ): Promise<string> {
-  const cardJson = buildAdaptiveCard(env, envelope);
+  const cardJson = await buildAdaptiveCard(env, envelope);
   const attachmentId = "pidgin-card";
 
   const messagePayload = {

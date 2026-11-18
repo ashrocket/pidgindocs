@@ -3,6 +3,7 @@ import { oauthConnectionsPanel, OAUTH_CONNECTIONS_JS } from "./oauth-connections
 import type { CommuteBriefingListItem } from "../commute/store";
 import type { SetupStatus } from "../setup/status";
 import type { Env } from "../types";
+import { linkSegments } from "../short-links";
 import { appPath, clientBase, routePath } from "../base-path";
 import { editionProductName } from "../edition-hooks";
 import { productText, contentAttribute, editionSlug } from "../wire-names";
@@ -87,8 +88,8 @@ export function inboxPage(messages: any[], filters: { typeFilter?: string; unrea
           <td><span class="badge ${m.type}${m.type === "question" && m.reply ? " answered" : ""}">${m.type === "question" && m.reply ? "answered" : m.type}</span></td>
           <td>
             ${m.type === "document"
-              ? `<a href="${appPath(base, `/${m.interactive ? "idoc" : "docs"}/${m.id}`)}" data-dnav-title="${esc(m.title)}">${isUrgent ? '<span class="priority-dot"></span>' : ""}<span ${contentAttribute()}>${esc(m.title)}</span></a>`
-              : `<strong><a href="${appPath(base, `/messages/${m.id}`)}" data-dnav-title="${esc(m.title)}">${isUrgent ? '<span class="priority-dot"></span>' : ""}<span ${contentAttribute()}>${esc(m.title)}</span></a></strong>`}
+              ? `<a href="${appPath(base, `/${m.interactive ? "idoc" : "docs"}/${m.link_segment ?? m.id}`)}" data-dnav-title="${esc(m.title)}">${isUrgent ? '<span class="priority-dot"></span>' : ""}<span ${contentAttribute()}>${esc(m.title)}</span></a>`
+              : `<strong><a href="${appPath(base, `/messages/${m.link_segment ?? m.id}`)}" data-dnav-title="${esc(m.title)}">${isUrgent ? '<span class="priority-dot"></span>' : ""}<span ${contentAttribute()}>${esc(m.title)}</span></a></strong>`}
             ${visualCount > 0 ? `<span class="visual-count">${visualCount} visual${visualCount === 1 ? "" : "s"}</span>` : ""}
             ${bodySnippet ? `<div class="body-preview" id="preview-${m.id}"><span ${contentAttribute()}>${bodySnippet}</span>${hasMore ? `<span class="more-link" data-on-click="expand" data-id="${esc(m.id)}">… <span style="color:${theme.accent};cursor:pointer">more</span></span>` : ""}</div>
             ${hasMore ? `<div class="body-full" id="full-${m.id}" style="display:none"><span ${contentAttribute()}>${esc(rawBody)}</span></div>` : ""}` : ""}
@@ -977,7 +978,9 @@ ${opts?.showOAuthConnections ? `<script nonce="${nonce}">${OAUTH_CONNECTIONS_JS}
 export function latestCommutePage(
   briefing: CommuteBriefingListItem | null,
   transcript?: string,
-  base = ""
+  base = "",
+  /** The source document's link segment (its short code when it has one). */
+  sourceSegment?: string
 ): Response {
   const nonce = crypto.randomUUID();
   if (!briefing) {
@@ -1051,7 +1054,7 @@ export function latestCommutePage(
     ${briefing.audio_key ? `<audio controls preload="metadata" src="${appPath(base, `/api/commute/${esc(briefing.source_message_id)}/audio`)}"></audio>` : `<div class="hint">Audio was not available for this run, so ${editionProductName()} kept the transcript instead.</div>`}
     <div class="links">
       <a href="${appPath(base, `/api/commute/${esc(briefing.source_message_id)}/transcript`)}">Open full transcript</a>
-      <a href="${appPath(base, `/docs/${esc(briefing.source_message_id)}`)}">Open source document</a>
+      <a href="${appPath(base, `/docs/${sourceSegment ?? esc(briefing.source_message_id)}`)}">Open source document</a>
       ${briefing.audio_key ? `<a href="${appPath(base, `/api/commute/${esc(briefing.source_message_id)}/audio`)}" target="_blank">Open raw audio</a>` : ""}
     </div>
     ${briefing.error ? `<div class="error">${esc(briefing.error)}</div>` : ""}

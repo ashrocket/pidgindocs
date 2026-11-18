@@ -1,6 +1,7 @@
 import { messageReadSql } from "../document-rbac";
 import { COMMUTE_SOURCE_READ_SQL, ensureCommuteBriefingsTable } from "../commute/store";
 import type { Env } from "../types";
+import { linkSegment, linkSegments } from "../short-links";
 
 // Audio items: D1 rows (migration 0043) and the wire shape the apps decode.
 // Every query is scoped to one user_id.
@@ -90,7 +91,8 @@ export function audioKeys(id: string, ext: string) {
   };
 }
 
-export function serializeAudioRow(row: AudioRow): AudioItem {
+/** `segment` is the item's link segment (code or UUID); without it the web link uses the UUID. */
+export function serializeAudioRow(row: AudioRow, segment: string = encodeURIComponent(row.id)): AudioItem {
   const hasTranscript = row.transcript_key !== null && (row.status === "ready" || row.status === "transcript_only");
   return {
     id: row.id,
@@ -111,10 +113,15 @@ export function serializeAudioRow(row: AudioRow): AudioItem {
     source_message_id: row.source_message_id,
     stream_url: `/api/audio/${encodeURIComponent(row.id)}/stream`,
     transcript_url: hasTranscript ? `/api/audio/${encodeURIComponent(row.id)}/transcript` : null,
-    web_url: `/audio/${encodeURIComponent(row.id)}`,
+    web_url: `/audio/${segment}`,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/** Serializes one item for a single-item response, minting its short code unless `mint` is false. */
+export async function serializeAudioRowLinked(env: Env, row: AudioRow, mint = true): Promise<AudioItem> {
+  return serializeAudioRow(row, await linkSegment(env, { kind: "audio", id: row.id }, mint));
 }
 
 export async function insertAudioRow(
@@ -331,7 +338,8 @@ export async function listAudioItems(
       .all<BriefingRow>(),
   ]);
 
-  const merged = [...(rows.results ?? []).map(serializeAudioRow), ...(briefings.results ?? []).map(serializeBriefing)].sort(
+  const segments = await linkSegments(env, (rows.results ?? []).map((row) => ({ kind: "audio" as const, id: row.id })));
+  const merged = [...(rows.results ?? []).map((row) => serializeAudioRow(row, segments.get(`audio:${row.id}`))), ...(briefings.results ?? []).map(serializeBriefing)].sort(
     newer
   );
   const items = merged.slice(0, limit);

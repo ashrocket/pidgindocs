@@ -1,6 +1,7 @@
 import { AUDIO_SOURCE_READ_SQL } from "../audio/store";
 import { artifactReadSql, messageReadSql } from "../workspace-access";
 import type { Env } from "../types";
+import { linkSegments, resolveItemId, segmentKey, type ShortLinkKind } from "../short-links";
 import { resolveCallerUserId, unauthorized } from "../middleware";
 import { json } from "../utils";
 import { editionWorkspaceSignInOnly } from "../edition-hooks";
@@ -29,6 +30,11 @@ const MAX_FAVORITES = 500;
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 const IN_CHUNK = 80;
 
+/** The short link kinds a code may name for each favorite kind. Runbooks have no codes. */
+const CODE_KINDS: Record<FavoriteKind, readonly ShortLinkKind[]> = {
+  doc: ["document", "document_version"], artifact: ["artifact"], message: ["message"], audio: ["audio"], runbook: [],
+};
+
 const isKind = (value: string): value is FavoriteKind => (FAVORITE_KINDS as readonly string[]).includes(value);
 
 function chunks<T>(items: T[]): T[][] {
@@ -52,22 +58,26 @@ async function visibleItems(env: Env, userId: string, teams: Set<string>, kind: 
       const rows = await env.DB.prepare(`SELECT id, title, user_id, team_id, sharing, public, interactive FROM messages WHERE ${typeClause} AND id IN (${marks})
         AND (${messageReadSql("messages")} OR (team_id IS NULL AND type = 'document' AND public = 1 AND ? = 1))`)
         .bind(...part, userId, userId, editionWorkspaceSignInOnly(env) ? 0 : 1).all<{ id: string; title: string; user_id: string | null; team_id: string | null; sharing: string; public: number; interactive: number }>();
+      const segments = await linkSegments(env, rows.results.map(row => ({ kind: kind === "doc" ? "document" as const : "message" as const, id: row.id })));
       for (const row of rows.results) {
-        const url = kind === "message" ? `/messages/${row.id}` : `${row.interactive === 1 ? "/idoc/" : "/docs/"}${row.id}`;
+        const segment = segments.get(segmentKey(kind === "doc" ? "document" : "message", row.id)) ?? row.id;
+        const url = kind === "message" ? `/messages/${segment}` : `${row.interactive === 1 ? "/idoc/" : "/docs/"}${segment}`;
         found.set(row.id, { title: row.title, url, team_id: row.team_id });
       }
     } else if (kind === "artifact") {
       const rows = await env.DB.prepare(`SELECT id, title, user_id, team_id, sharing, visibility FROM artifacts WHERE id IN (${marks})
         AND (${artifactReadSql("artifacts")} OR (team_id IS NULL AND visibility = 'public'))`)
         .bind(...part, userId, userId).all<{ id: string; title: string; user_id: string | null; team_id: string | null; sharing: string; visibility: string }>();
+      const segments = await linkSegments(env, rows.results.map(row => ({ kind: "artifact" as const, id: row.id })));
       for (const row of rows.results) {
-        found.set(row.id, { title: row.title, url: `/a/${row.id}`, team_id: row.team_id });
+        found.set(row.id, { title: row.title, url: `/a/${segments.get(segmentKey("artifact", row.id)) ?? row.id}`, team_id: row.team_id });
       }
     } else if (kind === "audio") {
       // Audio items stay per user: they never belong to a team.
       const rows = await env.DB.prepare(`SELECT id, title FROM audio_items WHERE user_id = ? AND ${AUDIO_SOURCE_READ_SQL()} AND id IN (${marks})`)
         .bind(userId, userId, userId, ...part).all<{ id: string; title: string }>();
-      for (const row of rows.results) found.set(row.id, { title: row.title, url: `/audio/${encodeURIComponent(row.id)}`, team_id: null });
+      const segments = await linkSegments(env, rows.results.map(row => ({ kind: "audio" as const, id: row.id })));
+      for (const row of rows.results) found.set(row.id, { title: row.title, url: `/audio/${segments.get(segmentKey("audio", row.id)) ?? encodeURIComponent(row.id)}`, team_id: null });
     } else {
       const rows = await env.DB.prepare(`SELECT id, title, team_id FROM ops_runbooks WHERE id IN (${marks})`)
         .bind(...part).all<{ id: string; title: string; team_id: string }>();
@@ -195,6 +205,7 @@ export async function handleFavorites(request: Request, env: Env): Promise<Respo
   try { itemId = decodeURIComponent(rawId); } catch { return json({ ok: false, error: "invalid id" }, 400); }
   if (!isKind(kind)) return json({ ok: false, error: "kind must be one of: " + FAVORITE_KINDS.join(", ") }, 400);
   if (!ID_PATTERN.test(itemId)) return json({ ok: false, error: "invalid id" }, 400);
+  if (method === "PUT" || method === "DELETE") itemId = await resolveItemId(env, itemId, userId, CODE_KINDS[kind]);
   if (method === "PUT") return upsertFavorite(request, env, userId, kind, itemId);
   if (method === "DELETE") {
     await env.DB.prepare("DELETE FROM user_favorites WHERE user_id = ? AND kind = ? AND item_id = ?").bind(userId, kind, itemId).run();

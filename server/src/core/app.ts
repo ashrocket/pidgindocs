@@ -1,4 +1,5 @@
 import { handleDocumentAudience } from "./routes/document-audience";
+import { linkSegments } from "./short-links";
 // The PidginCore router: every route that the shared engine serves, in the order that it matches them.
 // An edition adds its own routes and pages through the route blocks of core/edition-routes.ts, each
 // at a fixed point so that the order stays the same, and its own behaviour through the hooks of
@@ -930,7 +931,12 @@ export const coreRouter = {
           env,
           messages.map((message) => String((message as Record<string, unknown>).id))
         );
+        // One read-only lookup for the page; rows without a code keep their UUID.
+        const inboxSegments = await linkSegments(env, (messages as Array<Record<string, unknown>>).map((message) => ({
+          kind: message.type === "document" ? "document" as const : "message" as const, id: String(message.id),
+        })));
         for (const message of messages as Array<Record<string, unknown>>) {
+          message.link_segment = inboxSegments.get(`${message.type === "document" ? "document" : "message"}:${String(message.id)}`);
           message.visual_count = (blockMap.get(String(message.id)) ?? []).filter(
             (block) => block.type === "artifact"
           ).length;

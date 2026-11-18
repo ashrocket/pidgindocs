@@ -29,6 +29,7 @@ import {
   type FoldStatusInput,
   type SerializedMessageBlock,
 } from "../messages/store";
+import { linkSegment } from "../short-links";
 import { editionAccountLimits, UsageRefused, releaseEditionUsage, reserveEditionUsage, editionAccountActiveSql } from "../edition-hooks";
 import { applyLibraryQuery, loadEnabledLibraryPlacements } from "../library/query";
 
@@ -539,7 +540,7 @@ export async function handlePostMessage(
   const documentFields = payload.type === "document" ? {
     doc_slug: payload.slug || id,
     doc_version: 1,
-    url: `${env.WORKER_URL || new URL(request.url).origin}/${interactive ? "idoc" : "docs"}/${id}`,
+    url: `${env.WORKER_URL || new URL(request.url).origin}/${interactive ? "idoc" : "docs"}/${await linkSegment(env, { kind: "document", id })}`,
   } : {};
   return json({ ok: true, data: { id, type: payload.type, ...documentFields,
     ...(created.readAccess ? { read_access: created.readAccess } : {}) } }, 201);

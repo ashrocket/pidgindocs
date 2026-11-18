@@ -1,11 +1,12 @@
 import { restrictedContentTeams } from "./content-policy";
 import { editionRecordMentions, editionResolveMentions, editionOwnerProvisioned } from "./edition-hooks";
-import { editionMemberIdentityAllowed } from "./edition-hooks";
+import { editionMemberIdentityAllowed, editionProjectNameStatements, ProjectNameRejected } from "./edition-hooks";
 import { recheckEventStreams } from "./events/live";
 import { endAgentAccessStatements, narrowToAgentScopeStatements } from "./member-access";
 import { canReadResource, getWorkspaceResource, assertWorkspacePublishScope, resolveSharingTeam, WorkspaceAccessError, messageReadSql, artifactReadSql, type Sharing } from "./workspace-access";
 import { DOCUMENT_FAMILY_SQL, documentFamilyBinds } from "./documents/family";
 import type { Env, Project, Team, TeamMembership, WorkspaceComment, WorkspaceRole, WorkspaceResourceType } from "./types";
+import { linkSegments } from "./short-links";
 import { editionSlug } from "./wire-names";
 
 export const WORKSPACE_ROLES: WorkspaceRole[] = ["owner", "admin", "member", "viewer"];
@@ -151,17 +152,34 @@ export async function listProjects(
 
 export async function createProject(
   env: Env,
-  input: { teamId: string; userId: string; name: string; slug?: string; description?: string | null }
+  input: { teamId: string; userId: string; name: string; slug?: string; description?: string | null; shortName?: string }
 ): Promise<Project | null> {
   const membership = await getWorkspaceMembership(env, input.teamId, input.userId);
   if (!canAdminWorkspace(membership?.role ?? null)) return null;
   const id = crypto.randomUUID().replace(/-/g, "");
   const slug = slugify(input.slug || input.name);
-  await env.DB.prepare(
+  const insert = env.DB.prepare(
     "INSERT INTO projects (id, team_id, slug, name, description, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)"
-  )
-    .bind(id, input.teamId, slug, input.name.trim(), input.description ?? null, input.userId)
-    .run();
+  ).bind(id, input.teamId, slug, input.name.trim(), input.description ?? null, input.userId);
+  // The name is stored in the same batch as the project. If another project takes it
+  // between the check and the batch, the batch rolls back and one retry picks again.
+  for (let attempt = 0; ; attempt++) {
+    let names: D1PreparedStatement[] = [];
+    try {
+      names = await editionProjectNameStatements(env, { projectId: id, slug, requested: input.shortName });
+    } catch (error) {
+      // A failed name lookup must not stop project creation; the hourly backfill names it later.
+      if (error instanceof ProjectNameRejected || input.shortName) throw error;
+      console.error(JSON.stringify({ event: "short_link_failed" }));
+    }
+    try {
+      await env.DB.batch([insert, ...names]);
+      break;
+    } catch (error) {
+      const message = String(error);
+      if (attempt > 0 || !message.includes("UNIQUE constraint failed") || !message.includes("project_short_names")) throw error;
+    }
+  }
   return (await env.DB.prepare(
     "SELECT id, team_id, slug, name, description, pinned, archived_at, created_by_user_id, created_at, updated_at FROM projects WHERE id = ?"
   )
@@ -417,6 +435,15 @@ export async function listWorkspaceFeed(env: Env, input: {
   `).bind(...binds, limit + 1).all<WorkspaceFeedItem>();
   const items = (rows.results || []).slice(0, limit);
   const last = items.at(-1);
+  // One read-only lookup for the page: items with a code link by it, the rest keep their UUID.
+  const linkable = items.filter((item) => item.resource_type === "document" || item.resource_type === "message" || item.resource_type === "artifact");
+  if (linkable.length) {
+    const segments = await linkSegments(env, linkable.map((item) => ({ kind: item.resource_type as "document" | "message" | "artifact", id: item.id })));
+    for (const item of linkable) {
+      const segment = segments.get(`${item.resource_type}:${item.id}`);
+      if (segment && item.url.endsWith(item.id)) item.url = item.url.slice(0, item.url.length - item.id.length) + segment;
+    }
+  }
   return { items, next_cursor: rows.results.length > limit && last
     ? btoa(JSON.stringify({ at: last.created_at, id: last.id, type: last.resource_type })) : null };
 }
