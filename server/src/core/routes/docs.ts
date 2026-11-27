@@ -9,7 +9,8 @@ import { verifySession, resolveApiKeyUser, resolveCallerUserId, unauthorized } f
 import { sendOwnerEmail, emailWrapper } from "../email";
 import { renderPreviewPng } from "../preview/render";
 import { theme } from "../web/theme";
-import { editionSlug, versionBannerId } from "../wire-names";
+import { contentAttribute, documentBarId, editionSlug, versionBannerId } from "../wire-names";
+import { pageHeaders } from "../page-csp";
 import { UsageRefused, editionProductName, editionTicketResolver, reserveEditionUsage, editionWorkspaceSignInOnly } from "../edition-hooks";
 import { DOCUMENT_FAMILY_SQL, documentFamilyBinds } from "../documents/family";
 import { appPath, basePath } from "../base-path";
@@ -121,18 +122,6 @@ const PROTECTION_STYLE = `<style>
   img, svg, video, canvas, iframe { max-width: 100%; height: auto; }
   table { max-width: 100%; display: block; overflow-x: auto; }
   pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #pidgin-share-link {
-    position: fixed;
-    bottom: 10px;
-    right: 14px;
-    font-size: 11px;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    color: rgba(0,0,0,0.3);
-    text-decoration: none;
-    z-index: 9999;
-  }
-  #pidgin-share-link:hover { color: rgba(0,0,0,0.55); }
-  @media print { #pidgin-share-link { display: none; } }
 </style>`;
 
 function protectionScript(docId: string, logEndpoint: string): string {
@@ -160,41 +149,6 @@ function protectionScript(docId: string, logEndpoint: string): string {
   window.addEventListener('beforeprint', function() { report('print_attempt'); });
 })();
 </script>`;
-}
-
-function shareLink(docId: string, base: string): string {
-  const shareEndpoint = escHtml(appPath(base, `/api/docs/${encodeURIComponent(docId)}/share`));
-
-  return `<a href="#" id="pidgin-share-link" data-share-endpoint="${shareEndpoint}" onclick="(function(e){
-  e.preventDefault();
-  var link = e.currentTarget;
-  var endpoint = link.getAttribute('data-share-endpoint');
-  if (!endpoint) { return; }
-  link.textContent = '…';
-  fetch(endpoint, { method: 'POST', credentials: 'same-origin' })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if (!d.ok) { link.textContent = '↗ share'; return; }
-      var url = d.data.url;
-      if (navigator.share) {
-        navigator.share({ title: document.title || 'Document', url: url })
-          .then(function(){ link.textContent = '↗ share'; })
-          .catch(function(){ link.textContent = '↗ share'; });
-      } else {
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(url)
-            .then(function(){
-              link.textContent = '✓ copied';
-              setTimeout(function(){ link.textContent = '↗ share'; }, 2000);
-            })
-            .catch(function(){ link.textContent = '↗ share'; });
-        } else {
-          link.textContent = 'link ready';
-        }
-      }
-    })
-    .catch(function(){ link.textContent = '↗ share'; });
-})(event)">↗ share</a>`;
 }
 
 const MOBILE_VIEWPORT = `<meta name="viewport" content="width=device-width, initial-scale=1">`;
@@ -241,13 +195,78 @@ const versionBannerStyle = (): string => `<style>
   #${versionBannerId()} li { margin: 2px 0; }
 </style>`;
 
-function wrapHtml(html: string, docId: string, logEndpoint: string, banner = "", base = ""): string {
+// The thin bar on a document page: the way back to the app, the share page and
+// the reader. Like the version banner it is plain markup and a style block, no
+// script, so it works under the document sandbox, and its colors are explicit
+// so it stays readable whatever the document's own theme is. The sandbox lets
+// the page call nothing, so sharing is a link to a first-party page, not a
+// request. The bar is fixed, so a document's own body layout cannot move it;
+// the root's padding keeps the first lines clear of it. It sits below the
+// diagram zoom layer.
+const documentBarStyle = (): string => `<style>
+  html { box-sizing: border-box; padding-top: 40px; scroll-padding-top: 52px; }
+  #${documentBarId()} { position: fixed; top: 0; left: 0; right: 0; z-index: 9998; box-sizing: border-box;
+    height: 40px; margin: 0; padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; text-transform: none;
+    color: #1d3a39; background: #f6f9f9; border-bottom: 1px solid #d5e2e1; }
+  #${documentBarId()} div { display: flex; align-items: center; gap: 20px; height: 100%; margin: 0 0 0 auto; padding: 0; }
+  #${documentBarId()} a { display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 2px;
+    color: #1f5554; font: inherit; text-decoration: none; white-space: nowrap; }
+  #${documentBarId()} a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  #${documentBarId()} a:focus-visible { outline: 2px solid #1f5554; outline-offset: -6px; border-radius: 8px; }
+  #${documentBarId()} [data-narrow] { display: none; }
+  @media (max-width: 560px) { #${documentBarId()} [data-wide] { display: none; } #${documentBarId()} [data-narrow] { display: inline; } }
+  @media (pointer: coarse) { html { padding-top: 44px; scroll-padding-top: 56px; } #${documentBarId()} { height: 44px; } }
+  @media print { html { padding-top: 0; } #${documentBarId()} { display: none; } }
+</style>`;
+
+interface DocumentBarInput {
+  base: string;
+  docId: string;
+  language: Language;
+  /** A signed-in viewer gets the way back; a share link or a public page names the product instead. */
+  signedIn: boolean;
+  /** Whoever may ask for a share link: a personal document's owner, or a member reading a team document. */
+  canShare: boolean;
+  /** The signed link's own token and expiry, so the reader opens for the same viewer. */
+  token?: { token: string; expires: string };
+}
+
+function documentBar(input: DocumentBarInput, translate?: ReaderLabels): string {
+  const label = (key: string) => escHtml(translate ? translate(key, input.language, {}) : key);
+  const page = appPath(input.base, `/docs/${encodeURIComponent(input.docId)}`);
+  const query = new URLSearchParams({ reader: "1", reader_lang: input.language });
+  if (input.token) { query.set("token", input.token.token); query.set("expires", input.token.expires); }
+  const product = `<span translate="no">${escHtml(editionProductName())}</span>`;
+  // A phone has no room for the long label in every language, so there the product's name stands for it.
+  const lead = input.signedIn
+    ? `<a href="${escHtml(appPath(input.base, "/workspace"))}"><span aria-hidden="true" translate="no">←</span><span data-wide>${label("Back to workspace")}</span><span data-narrow translate="no">${escHtml(editionProductName())}</span></a>`
+    : product;
+  const share = input.canShare ? `<a href="${escHtml(`${page}/share?reader_lang=${input.language}`)}">${label("Share")}</a>` : "";
+  return `<nav id="${documentBarId()}" aria-label="${label("Document navigation")}">${lead}<div>${share}<a href="${escHtml(`${page}?${query}`)}">${label("Reader view")}</a></div></nav>`;
+}
+
+/** The page language: an allowed `reader_lang`, else the first allowed language the browser asks for, else English. */
+function pageLanguage(request: Request, env: Env): Language {
+  const allowed = translationLanguages(env);
+  const wanted = [new URL(request.url).searchParams.get("reader_lang") ?? "",
+    ...(request.headers.get("Accept-Language") ?? "").split(",").map(value => value.split(";")[0].trim().toLowerCase().split("-")[0])];
+  for (const value of wanted) {
+    const match = allowed.find(language => language === value);
+    if (match) return match;
+  }
+  return "en";
+}
+
+function wrapHtml(html: string, docId: string, logEndpoint: string, banner = "", base = "", bar = ""): string {
   // The typesetter stores root-relative asset URLs ("/a/assets/mermaid.js", the sound module) in the
   // document. Under a base path they are served at the prefix, so fix them when the page is served.
   if (base) html = html.replace(/"\/a\/assets\//g, '"' + appPath(base, "/a/assets/"));
   const script = protectionScript(docId, logEndpoint);
-  const share = shareLink(docId, base);
-  const bannerStyle = banner ? versionBannerStyle() : "";
+  const bannerStyle = (bar ? documentBarStyle() : "") + (banner ? versionBannerStyle() : "");
+  // The bar is fixed, so its place in the markup only sets reading order: first.
+  const lead = bar + banner;
   // Every rendered diagram gets its own zoom, so readers never have to zoom the whole page.
   const zoom = hasDiagram(html) ? DIAGRAM_ZOOM : "";
 
@@ -264,12 +283,12 @@ function wrapHtml(html: string, docId: string, logEndpoint: string, banner = "",
       html = html.replace(/(<html[^>]*>)/i, `$1<head>${headInject}</head>`);
     }
     // Function replacements: banner text holds titles, which may contain "$".
-    if (banner) {
+    if (lead) {
       html = /<body[^>]*>/i.test(html)
-        ? html.replace(/<body[^>]*>/i, (tag) => `${tag}${banner}`)
-        : html.replace(/<\/head>/i, (tag) => `${tag}${banner}`);
+        ? html.replace(/<body[^>]*>/i, (tag) => `${tag}${lead}`)
+        : html.replace(/<\/head>/i, (tag) => `${tag}${lead}`);
     }
-    html = html.replace(/<\/body>/i, () => `${zoom}${share}${script}</body>`);
+    html = html.replace(/<\/body>/i, () => `${zoom}${script}</body>`);
     return html;
   }
 
@@ -283,10 +302,9 @@ ${PROTECTION_STYLE}
 ${bannerStyle}
 </head>
 <body>
-${banner}
+${lead}
 ${html}
 ${zoom}
-${share}
 ${script}
 </body>
 </html>`;
@@ -484,7 +502,9 @@ export async function handleGetDoc(
     const ticket = context ? boardTicket(context.original_reference, row.body, bulletinRules(env), await editionTicketResolver(env, row.team_id!)) : null;
     const requestedLanguage = new URL(request.url).searchParams.get("reader_lang") as Language | null;
     const language = requestedLanguage && translationLanguages(env).includes(requestedLanguage) ? requestedLanguage : "en";
-    const reader = await operatorReader({ rawHtml, base: basePath(env), language, title: row.title || "Document", sourceUrl,
+    // "View original" keeps a chosen language, so the original's bar reads the same.
+    const originalUrl = language === requestedLanguage ? `${sourceUrl}${sourceQuery.size ? "&" : "?"}reader_lang=${language}` : sourceUrl;
+    const reader = await operatorReader({ rawHtml, base: basePath(env), language, title: row.title || "Document", sourceUrl: originalUrl,
       returnUrl: appPath(env, "/workspace") + (returnQuery ? `?${returnQuery}` : ""),
       returnLabel: context?.board_kind === "commons" ? "Back to Bulletin" : "Back to workspace",
       author: context?.author, createdAt: row.created_at, ticket: ticket ? { key: ticket.key, url: ticket.appUrl ? appPath(env, ticket.appUrl) : ticket.url } : null,
@@ -492,7 +512,13 @@ export async function handleGetDoc(
     wrapped = reader.html;
     contentSecurity = reader.csp;
   } else {
-    wrapped = wrapHtml(rawHtml, docId, `${workerUrl}/api/docs/log`, banner, basePath(env));
+    // The Apple app shows a document inside its own navigation and its web view
+    // does not repeat the session header on link taps, so its copy has no bar.
+    const params = new URL(request.url).searchParams;
+    const bar = row.in_app ? "" : documentBar({ base: basePath(env), docId, language: pageLanguage(request, env), signedIn: !!row.viewer_id,
+      canShare: !!row.viewer_id && (!!row.team_id || row.user_id === row.viewer_id),
+      token: row.via_token ? { token: params.get("token")!, expires: params.get("expires")! } : undefined }, readerLabels);
+    wrapped = wrapHtml(rawHtml, docId, `${workerUrl}/api/docs/log`, banner, basePath(env), bar);
   }
   // A document's content never changes for a given id, but its version banner
   // does once a newer version is published. Devices keep a copy briefly and
@@ -500,9 +526,11 @@ export async function handleGetDoc(
   const cacheControl = requestedReader || row.team_id || editionWorkspaceSignInOnly(env)
     ? "private, no-store"
     : isPublic ? "public, max-age=300, stale-while-revalidate=3600" : "private, max-age=300, stale-while-revalidate=86400";
+  // The bar's labels follow the browser's language when the address names none.
+  const vary: Record<string, string> = requestedReader ? {} : { Vary: "Accept-Language" };
   const etag = await contentTag(wrapped);
   if (request.headers.get("If-None-Match")?.split(/\s*,\s*/).some((tag) => tag.replace(/^W\//, "") === etag)) {
-    return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": cacheControl } });
+    return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": cacheControl, ...vary } });
   }
 
   if (row.user_id) {
@@ -533,6 +561,7 @@ export async function handleGetDoc(
       "Referrer-Policy": "no-referrer",
       "Cache-Control": cacheControl,
       ETag: etag,
+      ...vary,
     },
   });
 }
@@ -819,6 +848,75 @@ export async function handleShareDoc(
         : 500;
     return json({ ok: false, error: message }, status);
   }
+}
+
+// What buildShareDocData refuses, and the status a page gives for each. Its other errors are faults.
+const SHARE_REFUSALS: Record<string, number> = {
+  "document not found": 404,
+  "sharing window expired (1 week from creation)": 403,
+  "Publish to team before sharing this private document link.": 403,
+};
+
+const SHARE_PAGE_STYLE = `
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: ${theme.surface}; color: ${theme.ink}; }
+  main { width: min(100%, 520px); background: ${theme.paper}; border: 1px solid #d5e2e1; border-radius: 12px; padding: 28px; box-sizing: border-box; }
+  h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.25; }
+  p { margin: 0 0 16px; color: ${theme.muted}; overflow-wrap: anywhere; }
+  input { display: block; box-sizing: border-box; width: 100%; min-height: 44px; margin: 0 0 12px; padding: 10px 12px; font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: ${theme.ink}; background: ${theme.surface}; border: 1px solid #c4d8d7; border-radius: 8px; }
+  button { min-height: 44px; margin: 0 8px 16px 0; padding: 10px 16px; font: inherit; font-weight: 600; font-size: 15px; line-height: 1.2; color: #fff; background: ${theme.primary};
+    border: 1px solid ${theme.primary}; border-radius: 8px; cursor: pointer; }
+  button[data-share] { color: ${theme.primary}; background: ${theme.paper}; }
+  a { display: inline-flex; align-items: center; min-height: 44px; color: ${theme.accent}; font-weight: 600; }
+  :focus-visible { outline: 3px solid ${theme.accent}; outline-offset: 2px; }
+  p[role=status]:empty { margin: 0; }
+  [hidden] { display: none; }
+`;
+
+// Copies with the clipboard where the browser has one; otherwise it selects the link for a manual copy.
+const SHARE_PAGE_SCRIPT = `
+  const field = document.querySelector("input"), state = document.querySelector("[role=status]");
+  const copy = document.querySelector("button[data-copy]"), send = document.querySelector("button[data-share]");
+  const select = () => { field.focus(); field.select(); state.textContent = copy.dataset.select; };
+  copy.addEventListener("click", () => { if (!navigator.clipboard) return select(); navigator.clipboard.writeText(field.value).then(() => { state.textContent = copy.dataset.copied; }, select); });
+  field.addEventListener("focus", () => field.select());
+  if (navigator.share) { send.hidden = false; send.addEventListener("click", () => { navigator.share({ title: send.dataset.title, url: field.value }).catch(() => {}); }); }
+`;
+
+// The share page — GET /docs/:id/share. A document page is sandboxed and can
+// call nothing, so its bar links here: a first-party page that makes the link
+// for the signed-in viewer and shows it, under the same rules as the API.
+export async function handleSharePage(request: Request, env: Env, docId: string, readerLabels?: ReaderLabels): Promise<Response> {
+  const callerUserId = await resolveCallerUserId(request, env);
+  if (!callerUserId) return unauthorized();
+  const language = pageLanguage(request, env);
+  const label = (key: string) => escHtml(readerLabels ? readerLabels(key, language, {}) : key);
+  let data: ShareDocData | null = null;
+  let refusal = "";
+  let status = 200;
+  try {
+    data = await buildShareDocData(env, docId, request.url, callerUserId);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : "";
+    status = SHARE_REFUSALS[refusal] ?? 500;
+    if (status === 500) { console.error(error); refusal = "share generation failed"; }
+  }
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  // A language the address chose goes back with the reader, so the document's bar reads the same.
+  const chosen = new URL(request.url).searchParams.get("reader_lang") === language ? `?reader_lang=${language}` : "";
+  const back = `<a href="${escHtml(appPath(env, `/docs/${encodeURIComponent(docId)}`) + chosen)}">${label("Back to document")}</a>`;
+  const body = data
+    ? `<p ${contentAttribute()}>${escHtml(data.title)}</p>
+<input type="text" readonly value="${escHtml(data.url)}" aria-label="${label("Share link")}" translate="no">
+<button type="button" data-copy data-copied="${label("Copied")}" data-select="${label("Select the link and copy it.")}">${label("Copy link")}</button><button type="button" data-share data-title="${escHtml(data.title)}" hidden>${label("Share")}</button>
+<p role="status"></p>
+<p>${label(data.expires_at ? "Anyone with this link can read this document for one hour." : "Only people who can already read this document can open this link.")}</p>
+${back}<script nonce="${nonce}">${SHARE_PAGE_SCRIPT}</script>`
+    : `<p role="alert">${label(refusal)}</p>${back}`;
+  const html = `<!DOCTYPE html><html lang="${language}"><head><meta charset="utf-8">${MOBILE_VIEWPORT}<title>${label("Share link")} · ${escHtml(editionProductName())}</title><style>${SHARE_PAGE_STYLE}</style></head><body><main><h1>${label("Share link")}</h1>${body}</main></body></html>`;
+  // The page can hold a link that opens the document for anyone, so nothing keeps a copy of it.
+  return new Response(html, { status, headers: { ...pageHeaders(nonce), "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer" } });
 }
 
 export async function buildShareDocData(

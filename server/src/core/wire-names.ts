@@ -76,3 +76,5 @@ export const contentAttribute = (): string => `data-${editionSlug()}-content`;
 export const workspaceUserSessionId = (userId: string): string => `${editionSlug()}-user-${userId}`;
 /** The DOM id of the document version banner, for example `pidgin-version-banner`. */
 export const versionBannerId = (): string => `${editionSlug()}-version-banner`;
+/** The id of the thin bar on a document page, for example `pidgin-document-bar`. */
+export const documentBarId = (): string => `${editionSlug()}-document-bar`;

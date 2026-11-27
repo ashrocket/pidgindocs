@@ -22,7 +22,7 @@ import { handleDeferredActions, handleEventTicket, handleEventsWebSocket, handle
 import { listInboxItems } from "./events/query";
 import { recheckEventStreams, streamsOfUser } from "./events/live";
 import { handleEnhanceQueueBatch } from "./enhance/consumer";
-import { handleGetDoc, handleGetInteractiveDoc, handleShareDoc, handleDocLog, handlePreviewDoc, handlePreviewImage, handleGetDocVersions } from "./routes/docs";
+import { handleGetDoc, handleGetInteractiveDoc, handleShareDoc, handleSharePage, handleDocLog, handlePreviewDoc, handlePreviewImage, handleGetDocVersions } from "./routes/docs";
 import { handlePublishArtifact, handleListArtifacts, handleGetArtifactMeta, handlePatchArtifact, handleDeleteArtifact, handleShareArtifact, handleServeArtifact, artifactAssetResponse, handleArtifactRuntimeComplete, handleArtifactRuntimeStorage, handleArtifactTelemetry } from "./routes/artifacts";
 import { handleGetClientBuild, handlePostClientBuild } from "./routes/client-build";
 import { handlePostReply } from "./routes/reply";
@@ -622,6 +622,10 @@ export const coreRouter = {
       const shareMatch = path.match(/^\/(?:api\/)?docs\/([a-f0-9-]+)\/share$/);
       if (shareMatch && method === "POST") {
         return await handleShareDoc(request, env, shareMatch[1]);
+      }
+      // The share page that a document page's bar links to
+      if (shareMatch && method === "GET" && !path.startsWith("/api/")) {
+        return await handleSharePage(request, env, shareMatch[1], editionReaderLabels());
       }
 
       // Client-side access event logging (beacon endpoint)
