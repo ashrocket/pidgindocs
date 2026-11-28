@@ -14,6 +14,7 @@ import { appShellCss, appShellHeader, LIBRARY_TABS_CSS, libraryTabsHtml } from "
 import type { ShellConfig } from "./app-shell";
 import { theme } from "./theme";
 import { pageHeaders } from "../page-csp";
+import { AUDIO_REPLY_CSS, audioReplyScript } from "../assignments/web";
 import { COMMUTE_SCRIPT_MODEL, COMMUTE_SPEECH_MODEL } from "../ai/tiers";
 
 export interface TeamUpdateItem {
@@ -1037,6 +1038,7 @@ export function latestCommutePage(
   .links a{color:${theme.primary};text-decoration:none;font-weight:700}
   .links a:hover{text-decoration:underline}
   .error{margin-top:.8rem;color:${theme.error};font-size:.85rem}
+  ${AUDIO_REPLY_CSS}
 </style></head><body>
 <div class="shell">
   <div class="top">
@@ -1058,12 +1060,16 @@ export function latestCommutePage(
       ${briefing.audio_key ? `<a href="${appPath(base, `/api/commute/${esc(briefing.source_message_id)}/audio`)}" target="_blank">Open raw audio</a>` : ""}
     </div>
     ${briefing.error ? `<div class="error">${esc(briefing.error)}</div>` : ""}
+    <div id="commute-reply"></div>
   </div>
   <div class="transcript">
     <div class="section-title">Preview</div>
     <pre>${esc(transcriptPreview || "Transcript not available.")}</pre>
   </div>
 </div>
+<script nonce="${nonce}">${audioReplyScript(base)}
+AudioReplies.mount(document.getElementById('commute-reply'),${JSON.stringify(`commute:${briefing.source_message_id}`).replace(/</g,"\\u003c")},document.querySelector('.player audio'));
+</script>
 </body></html>`,
     { headers: pageHeaders(nonce) }
   );
