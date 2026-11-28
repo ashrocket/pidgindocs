@@ -78,6 +78,7 @@ export function audioReplyScript(base = ""): string {
       if(task.reason)article.appendChild(el('small',task.reason));
       if(task.voice_url){var voice=el('audio');voice.controls=true;voice.preload='none';voice.src=config.base+task.voice_url;article.appendChild(voice);}
       if(task.result){var result=el('p',task.result);result.setAttribute('data-duva-content','');article.appendChild(result);}
+      var cloud=/^codex-cloud:(task_[A-Za-z0-9_-]+)$/.exec(task.session_ref||'');if(cloud){var link=el('a',t('Open cloud task'));link.href='https://chatgpt.com/codex/tasks/'+cloud[1];link.target='_blank';link.rel='noopener';article.appendChild(link);}
       return article;
     }
     function upsert(task){var old=Array.from(history.children).find(function(x){return x.dataset.assignment===task.id;}),signature=JSON.stringify(task);if(old&&old.dataset.signature===signature)return;if(old&&Array.from(old.querySelectorAll('audio')).some(function(audio){return !audio.paused;}))return;var fresh=row(task);fresh.dataset.signature=signature;if(old)old.replaceWith(fresh);else history.appendChild(fresh);}

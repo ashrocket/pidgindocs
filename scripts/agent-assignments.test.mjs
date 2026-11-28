@@ -58,6 +58,15 @@ test('lost dispatch acknowledgement never causes an automatic launch or duplicat
   assert.equal(launches,0);assert.equal(result.recovered[0].status,'dispatch_request');
 });
 
+test('cloud output without a task receipt stays in reconciliation and never launches twice',async()=>{
+  const f=await fixture('cloud');let launches=0;
+  const execute=async()=>{launches++;return {code:0,stdout:'Accepted, but no task identifier returned.'};};
+  const first=await runOnce(f.config,{fetchImpl:f.fetchImpl,execute});
+  assert.equal(first.status,'needs_reconciliation');
+  const next=await runOnce(f.config,{fetchImpl:f.fetchImpl,execute});
+  assert.equal(next.recovered[0].status,'needs_reconciliation');assert.equal(launches,1);
+});
+
 test('lost completion acknowledgement reuses the saved result, without running Codex again',async()=>{
   const f=await fixture();let launches=0,fail=true;
   const fetchImpl=async(url,options)=>{const response=await f.fetchImpl(url,options);if(fail&&JSON.parse(options.body??'{}').action==='complete'){fail=false;throw new Error('lost completion');}return response;};

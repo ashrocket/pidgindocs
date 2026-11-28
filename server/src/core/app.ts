@@ -897,7 +897,6 @@ export const coreRouter = {
       }
 
       { const routed = await editionRoutes().hostingPages?.(routeContext); if (routed) return routed; }
-      if ((path === "/audio" || /^\/audio\/[^/]+$/.test(path)) && method === "GET") return await renderAudio(request, env, path);
       // Without an edition page at the root, a visit goes to setup, which shows the sign-in page when signed out.
       if (path === "/" && method === "GET") return new Response(null, { status: 302, headers: { Location: "/setup" } });
 
@@ -963,6 +962,7 @@ export const coreRouter = {
         return withNavShell(tocPage(docs.results, tocTeams, base, editionShell(env, { base, canManagePeople: await canManagePeopleFor(userId, tocTeams) })), shellFor(userId));
       }
       { const routed = await editionRoutes().hostingWorkspacePages?.(routeContext); if (routed) return routed; }
+      if ((path === "/audio" || /^\/audio\/[^/]+$/.test(path)) && method === "GET") return await renderAudio(request, env, path);
       // Commute is now Audio. /commute/latest stays as it was.
       if (path === "/commute" && method === "GET") {
         return new Response(null, { status: 302, headers: { Location: "/audio" } });

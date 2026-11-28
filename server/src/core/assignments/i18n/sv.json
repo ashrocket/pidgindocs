@@ -52,5 +52,6 @@
   "Show more": "Visa fler",
   "Transcript": "Transkription",
   "Audio could not be loaded.": "Det gick inte att läsa in ljudet.",
-  "Waiting for an agent that can use audio": "Väntar på en agent som kan hantera ljud"
+  "Waiting for an agent that can use audio": "Väntar på en agent som kan hantera ljud",
+  "Open cloud task": "Öppna molnuppgift"
 }

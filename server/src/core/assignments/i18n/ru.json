@@ -52,5 +52,6 @@
   "Show more": "Показать ещё",
   "Transcript": "Текст записи",
   "Audio could not be loaded.": "Не удалось загрузить аудио.",
-  "Waiting for an agent that can use audio": "Ожидает агента, который может обработать аудио"
+  "Waiting for an agent that can use audio": "Ожидает агента, который может обработать аудио",
+  "Open cloud task": "Открыть облачную задачу"
 }

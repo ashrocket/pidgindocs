@@ -115,10 +115,10 @@ export async function runOnce(rawConfig, { fetchImpl=fetch, execute=executeCodex
     if(result.code!==0){journal.phase='needs_reconciliation';journal.exit_code=result.code;await save(journalPath,journal);return {status:journal.phase,id:task.id,recovered};}
     if(config.target==='cloud'){
       const remote=result.stdout.match(/\b(task_[A-Za-z0-9_-]+)\b/);
-      journal.phase='submitted';journal.session_ref=remote?`codex-cloud:${remote[1]}`:journal.session_ref;
+      journal.phase=remote?'submitted':'needs_reconciliation';journal.session_ref=remote?`codex-cloud:${remote[1]}`:journal.session_ref;
       await save(journalPath,journal);
       await api(`/api/assignments/${task.id}/update`,{action:'dispatch',lease_token:claim.lease_token,session_ref:journal.session_ref});
-      return {status:'dispatched',id:task.id,session_ref:journal.session_ref,recovered};
+      return {status:remote?'dispatched':'needs_reconciliation',id:task.id,session_ref:journal.session_ref,recovered};
     }
     const answer=(await readFile(resultPath,'utf8')).trim();
     if(!answer)throw new Error('Codex exited without a final answer; reconcile the saved session');
