@@ -196,17 +196,29 @@ const versionBannerStyle = (): string => `<style>
 </style>`;
 
 // The thin bar on a document page: the way back to the app, the share page and
-// the reader. Like the version banner it is plain markup and a style block, no
-// script, so it works under the document sandbox, and its colors are explicit
-// so it stays readable whatever the document's own theme is. The sandbox lets
-// the page call nothing, so sharing is a link to a first-party page, not a
-// request. The bar is fixed, so a document's own body layout cannot move it;
-// the root's padding keeps the first lines clear of it. It sits below the
-// diagram zoom layer.
+// the reader. Like the version banner it is plain markup and a style block, and
+// its colors are explicit so it stays readable whatever the document's own
+// theme is. The sandbox lets the page call nothing, so sharing is a link to a
+// first-party page, not a request. The bar is fixed, so a document's own body
+// layout cannot move it; the root's padding keeps the first lines clear of it.
+// It sits below the diagram zoom layer. A page's own fixed or sticky header
+// would sit under it, so belowBarScript marks such elements and the last rules
+// here move them down by the bar's height, on screen only.
+// The bar's height with a mouse and with touch; the script below reads these instead of measuring the bar, which would lay out the page.
+const BAR_HEIGHT = 40;
+const BAR_HEIGHT_TOUCH = 44;
+const belowBarMark = (): string => `data-${editionSlug()}-below-bar`;
+const belowBarFill = (): string => `data-${editionSlug()}-below-bar-fill`;
+const belowBarTop = (): string => `--${editionSlug()}-below-bar-top`;
+const belowBarMax = (): string => `--${editionSlug()}-below-bar-max`;
+const belowBarReading = (): string => `data-${editionSlug()}-below-bar-reading`;
+const belowBarRules = (bar: string): string =>
+  `[${belowBarMark()}] { top: calc(var(${belowBarTop()}) + ${bar}) !important; }
+    [${belowBarFill()}] { max-height: min(var(${belowBarMax()}), calc(100% - var(${belowBarTop()}) - ${bar})) !important; }`;
 const documentBarStyle = (): string => `<style>
-  html { box-sizing: border-box; padding-top: 40px; scroll-padding-top: 52px; }
+  html { box-sizing: border-box; padding-top: ${BAR_HEIGHT}px; scroll-padding-top: ${BAR_HEIGHT + 12}px; }
   #${documentBarId()} { position: fixed; top: 0; left: 0; right: 0; z-index: 9998; box-sizing: border-box;
-    height: 40px; margin: 0; padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+    height: ${BAR_HEIGHT}px; margin: 0; padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
     font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; text-transform: none;
     color: #1d3a39; background: #f6f9f9; border-bottom: 1px solid #d5e2e1; }
@@ -217,9 +229,133 @@ const documentBarStyle = (): string => `<style>
   #${documentBarId()} a:focus-visible { outline: 2px solid #1f5554; outline-offset: -6px; border-radius: 8px; }
   #${documentBarId()} [data-narrow] { display: none; }
   @media (max-width: 560px) { #${documentBarId()} [data-wide] { display: none; } #${documentBarId()} [data-narrow] { display: inline; } }
-  @media (pointer: coarse) { html { padding-top: 44px; scroll-padding-top: 56px; } #${documentBarId()} { height: 44px; } }
+  @media (pointer: coarse) { html { padding-top: ${BAR_HEIGHT_TOUCH}px; scroll-padding-top: ${BAR_HEIGHT_TOUCH + 12}px; } #${documentBarId()} { height: ${BAR_HEIGHT_TOUCH}px; } }
   @media print { html { padding-top: 0; } #${documentBarId()} { display: none; } }
+  @media screen { ${belowBarRules(`${BAR_HEIGHT}px`)} }
+  @media screen and (pointer: coarse) { ${belowBarRules(`${BAR_HEIGHT_TOUCH}px`)} }
+  [${belowBarReading()}] { transition: none !important; }
 </style>`;
+
+/** Authored markup that fixes or sticks an element, in a style rule or set by its own script. */
+function positionsOwnElements(html: string): boolean {
+  return /(?:position\s*:\s*|["'])(?:-webkit-)?(?:fixed|sticky)\b/i.test(html);
+}
+
+// Marks each fixed or sticky element whose top edge would sit under the bar,
+// keeping its own top in a custom property for the rules above. A marked fixed
+// element also keeps its own maximum height, and the rules shorten it by the
+// same amount, so moving it down does not push its end off screen. Left alone:
+// the bar, the diagram zoom layer, a sticky element that sticks inside its own
+// scrolling box, and a fixed element placed against a transformed ancestor
+// rather than the window. Each look takes the marks off first, so an element
+// that stops being fixed or sticky loses them and one whose top changes is
+// marked again with the new value. It looks again once the page has loaded,
+// after the window changes size (a media query can fix or free an element),
+// and at elements the page's own script adds or restyles. It runs only when
+// positionsOwnElements finds something.
+const belowBarScript = (): string => `<script>
+(function() {
+  var bar = document.getElementById(${JSON.stringify(documentBarId())});
+  if (!bar || !window.getComputedStyle) return;
+  var mark = ${JSON.stringify(belowBarMark())}, fill = ${JSON.stringify(belowBarFill())};
+  var topVar = ${JSON.stringify(belowBarTop())}, maxVar = ${JSON.stringify(belowBarMax())}, reading = ${JSON.stringify(belowBarReading())};
+  function placed(position) { return position === "fixed" || position === "sticky" || position === "-webkit-sticky"; }
+  function own(el) { return el !== bar && !bar.contains(el) && !(el.closest && el.closest(".dz-frame")); }
+  function set(el, name, value) {
+    // Writing an unchanged value would wake the observer below for nothing.
+    if (value === null) { if (el.style.getPropertyValue(name)) el.style.removeProperty(name); }
+    else if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
+  }
+  function boxed(el) { var style = getComputedStyle(el); return /auto|scroll|hidden/.test(style.overflowX + style.overflowY); }
+  function scrollsInside(el) {
+    for (var up = el.parentElement; up && up !== document.body && up !== document.documentElement; up = up.parentElement) if (boxed(up)) return true;
+    // The body scrolls on its own only when the root's overflow is set; otherwise the body's goes to the window.
+    return !!up && up === document.body && boxed(document.documentElement) && boxed(document.body);
+  }
+  // These make an ancestor, not the window, what a fixed element is placed against.
+  function frames(el) {
+    var style = getComputedStyle(el);
+    return style.transform !== "none" || style.perspective !== "none" || style.filter !== "none" ||
+      (style.backdropFilter || style.webkitBackdropFilter || "none") !== "none" || /paint|layout|strict|content/.test(style.contain || "") ||
+      /transform|perspective|filter/.test(style.willChange || "") || (style.containerType || "normal") !== "normal";
+  }
+  function framedFixed(el) {
+    for (var up = el.parentElement; up; up = up.parentElement) if (frames(up)) return true;
+    return false;
+  }
+  // Only elements a style rule or an inline style could fix or stick, and those already marked, are read:
+  // reading every element's computed style takes a second on a long page.
+  function rules(list, into) {
+    for (var i = 0; i < list.length; i++) {
+      var rule = list[i], position = rule.style ? rule.style.getPropertyValue("position") : "";
+      if (rule.selectorText && /fixed|sticky|var\\(/.test(position)) into.push(rule.selectorText);
+      try { if (rule.cssRules) rules(rule.cssRules, into); } catch (e) {}
+    }
+  }
+  function candidates() {
+    var found = ["[" + mark + "]", '[style*="fixed" i]', '[style*="sticky" i]'], sheets = [].slice.call(document.styleSheets).concat(document.adoptedStyleSheets || []);
+    for (var i = 0; i < sheets.length; i++) try { rules(sheets[i].cssRules, found); } catch (e) {}
+    var test = document.createDocumentFragment();
+    return found.filter(function(selector) { try { test.querySelector(selector); return true; } catch (e) { return false; } }).join(",");
+  }
+  // Built at most once a frame: a page that adds rows one at a time queues thousands of looks into one frame.
+  var selector = null;
+  function scan(root, deep) {
+    if (!root || root.nodeType !== 1) return;
+    // A class on the root or a changed style sheet can fix anything in the body.
+    if (root === document.documentElement || root.nodeName === "STYLE") { root = document.body; deep = true; }
+    if (!own(root)) return;
+    var found = [], i;
+    if (deep) {
+      if (selector === null) selector = candidates();
+      var list = root.querySelectorAll(selector);
+      if (root.matches(selector)) found.push(root);
+      for (i = 0; i < list.length; i++) if (own(list[i])) found.push(list[i]);
+    } else if (root.hasAttribute(mark) || placed(getComputedStyle(root).position)) found.push(root);
+    if (!found.length) return;
+    // Marks off, every value read, then marks on, with transitions off throughout, so that neither the
+    // read nor the move animates. A header that transitions its top would otherwise be read mid-move.
+    for (i = 0; i < found.length; i++) { found[i].setAttribute(reading, ""); found[i].removeAttribute(mark); found[i].removeAttribute(fill); }
+    var limit = matchMedia("(pointer: coarse)").matches ? ${BAR_HEIGHT_TOUCH} : ${BAR_HEIGHT}, plan = [];
+    for (i = 0; i < found.length; i++) {
+      var el = found[i], style = getComputedStyle(el), position = style.position, at = parseFloat(style.top), fixed = position === "fixed";
+      var lift = placed(position) && at < limit;
+      if (lift) lift = fixed ? !framedFixed(el) : !scrollsInside(el);
+      plan.push([el, lift, at, fixed, style.maxHeight]);
+    }
+    for (i = 0; i < plan.length; i++) {
+      var item = plan[i];
+      set(item[0], topVar, item[1] ? item[2] + "px" : null);
+      set(item[0], maxVar, item[1] && item[3] ? (item[4] === "none" ? "100%" : item[4]) : null);
+      if (item[1]) { item[0].setAttribute(mark, ""); if (item[3]) item[0].setAttribute(fill, ""); }
+    }
+    // Settle the new position before transitions come back on.
+    for (i = 0; i < found.length; i++) getComputedStyle(found[i]).top;
+    for (i = 0; i < found.length; i++) found[i].removeAttribute(reading);
+  }
+  // A class can fix the element's descendants too; an inline style change, often an animation frame, only its own element.
+  var pending = [], queued = false;
+  function later(root, deep) {
+    pending.push([root, deep]);
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function() { queued = false; selector = null; var roots = pending; pending = []; for (var i = 0; i < roots.length; i++) scan(roots[i][0], roots[i][1]); });
+  }
+  // The first look waits for the frame before the first paint, when the browser works out every style anyway.
+  later(document.body, true);
+  addEventListener("load", function() { later(document.body, true); });
+  var resized = 0;
+  addEventListener("resize", function() { clearTimeout(resized); resized = setTimeout(function() { later(document.body, true); }, 100); });
+  if (window.MutationObserver) new MutationObserver(function(records) {
+    for (var i = 0; i < records.length; i++) {
+      var record = records[i];
+      if (record.type === "attributes") later(record.target, record.attributeName === "class");
+      else if (record.target.nodeName === "STYLE") later(record.target, true);
+      else for (var j = 0; j < record.addedNodes.length; j++) later(record.addedNodes[j], true);
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+})();
+</script>`;
 
 interface DocumentBarInput {
   base: string;
@@ -263,7 +399,7 @@ function wrapHtml(html: string, docId: string, logEndpoint: string, banner = "",
   // The typesetter stores root-relative asset URLs ("/a/assets/mermaid.js", the sound module) in the
   // document. Under a base path they are served at the prefix, so fix them when the page is served.
   if (base) html = html.replace(/"\/a\/assets\//g, '"' + appPath(base, "/a/assets/"));
-  const script = protectionScript(docId, logEndpoint);
+  const script = (bar && positionsOwnElements(html) ? belowBarScript() : "") + protectionScript(docId, logEndpoint);
   const bannerStyle = (bar ? documentBarStyle() : "") + (banner ? versionBannerStyle() : "");
   // The bar is fixed, so its place in the markup only sets reading order: first.
   const lead = bar + banner;
