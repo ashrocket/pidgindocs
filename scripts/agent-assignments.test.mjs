@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { launchSpec, runOnce, validateConfig } from './agent-assignments.mjs';
+import * as runner from './agent-assignments.mjs';
 
 async function fixture(target='local') {
   const stateDir=await mkdtemp(join(tmpdir(),'audio-agent-runner-'));
@@ -53,7 +54,7 @@ test('lost dispatch acknowledgement never causes an automatic launch or duplicat
   const f=await fixture();let launches=0,fail=true;
   const fetchImpl=async(url,options)=>{const response=await f.fetchImpl(url,options);if(fail&&JSON.parse(options.body??'{}').action==='dispatch'){fail=false;throw new Error('lost acknowledgement');}return response;};
   const execute=async()=>{launches++;throw new Error('must not launch');};
-  await assert.rejects(runOnce(f.config,{fetchImpl,execute}),/lost acknowledgement/);
+  await assert.rejects(runOnce(f.config,{fetchImpl,execute}),{retryable:true});
   const result=await runOnce(f.config,{fetchImpl,execute});
   assert.equal(launches,0);assert.equal(result.recovered[0].status,'dispatch_request');
 });
@@ -71,7 +72,7 @@ test('lost completion acknowledgement reuses the saved result, without running C
   const f=await fixture();let launches=0,fail=true;
   const fetchImpl=async(url,options)=>{const response=await f.fetchImpl(url,options);if(fail&&JSON.parse(options.body??'{}').action==='complete'){fail=false;throw new Error('lost completion');}return response;};
   const execute=async(_binary,args)=>{launches++;await writeFile(args[args.indexOf('--output-last-message')+1],'Verified result');return {code:0,stdout:''};};
-  await assert.rejects(runOnce(f.config,{fetchImpl,execute}),/lost completion/);
+  await assert.rejects(runOnce(f.config,{fetchImpl,execute}),{retryable:true});
   const result=await runOnce(f.config,{fetchImpl,execute});assert.equal(launches,1);assert.equal(result.recovered[0].status,'completed');
 });
 
@@ -82,4 +83,60 @@ test('refuses ambiguous cloud routing, insecure hosts, and cross-deployment jour
   await runOnce(f.config,{fetchImpl:async()=>new Response(JSON.stringify({ok:true,data:{runtime:{id:'rt'},items:[]}}))});
   await assert.rejects(runOnce({...f.config,url:'https://another.example.test'},{fetchImpl:f.fetchImpl}),/separate state directory/);
   const meta=JSON.parse(await readFile(join(f.config.stateDir,'connection.json'),'utf8'));assert.ok(!JSON.stringify(meta).includes('private-test-token'));
+});
+
+test('an abandoned journal does not block later queue pages or launch its uncertain work again',async()=>{
+  const f=await fixture('cloud');let launches=0;
+  const staleId='33333333-3333-4333-8333-333333333333';
+  await writeFile(join(f.config.stateDir,`assignment-${staleId}.json`),JSON.stringify({id:staleId,phase:'claimed',lease_token:'old-private-lease'}));
+  const fetchImpl=async(url,options)=>{
+    if(url.includes('/assignments?'))return Response.json({ok:true,data:new URL(url).searchParams.get('after')==='7'?{items:[f.task],next_cursor:null}:{items:[{...f.task,id:staleId,seq:7}],next_cursor:7}});
+    assert.ok(!url.includes(staleId));return f.fetchImpl(url,options);
+  };
+  const execute=async()=>{launches++;return {code:0,stdout:'task_next'};};
+  const first=await runOnce(f.config,{fetchImpl,execute});
+  assert.equal(first.status,'needs_reconciliation');assert.equal(launches,0);
+  const second=await runOnce(f.config,{fetchImpl,execute});
+  assert.equal(second.status,'dispatched');assert.equal(launches,1);
+});
+
+test('losing a claim race leaves the bridge available for its next poll',async()=>{
+  const f=await fixture('cloud');let contention=true,launches=0;
+  const fetchImpl=async(url,options)=>{
+    if(url.endsWith('/claim')&&contention){contention=false;return Response.json({ok:false,error:'Already claimed'},{status:409});}
+    return f.fetchImpl(url,options);
+  };
+  const execute=async()=>{launches++;return {code:0,stdout:'task_winner'};};
+  assert.equal((await runOnce(f.config,{fetchImpl,execute})).status,'contended');
+  assert.equal(launches,0);
+  assert.equal((await runOnce(f.config,{fetchImpl,execute})).status,'dispatched');
+  assert.equal(launches,1);
+});
+
+test('recovery republishes a saved cloud task receipt without submitting again',async()=>{
+  const f=await fixture('cloud');let fail=true,launches=0;
+  const fetchImpl=async(url,options)=>{
+    const body=JSON.parse(options.body??'{}');
+    if(body.session_ref==='codex-cloud:task_receipt'&&fail){fail=false;throw new Error('lost receipt acknowledgement');}
+    return f.fetchImpl(url,options);
+  };
+  const execute=async()=>{launches++;return {code:0,stdout:'task_receipt'};};
+  await assert.rejects(runOnce(f.config,{fetchImpl,execute}));
+  await runOnce(f.config,{fetchImpl,execute});
+  assert.equal(launches,1);
+  assert.equal(f.calls.filter(c=>c.body?.session_ref==='codex-cloud:task_receipt').length,1);
+  await runOnce(f.config,{fetchImpl,execute});
+  assert.equal(f.calls.filter(c=>c.body?.session_ref==='codex-cloud:task_receipt').length,1);
+});
+
+test('watching survives temporary API outages with capped backoff and resets after a successful poll',async()=>{
+  const controller=new AbortController(),delays=[];let polls=0;
+  const temporary=Object.assign(new Error('temporary failure'),{retryable:true});
+  await runner.watchAssignments({}, {signal:controller.signal,
+    run:async()=>{polls++;if(polls<5)throw temporary;return {status:'idle'};},
+    wait:async milliseconds=>{delays.push(milliseconds);if(polls===5)controller.abort();},
+    onResult:()=>{},onError:()=>{},
+  });
+  assert.deepEqual(delays,[10000,20000,40000,60000,10000]);
+  await assert.rejects(runner.watchAssignments({}, {run:async()=>{throw Object.assign(new Error('not authorized'),{status:401,retryable:false});},onError:()=>{}}),/not authorized/);
 });

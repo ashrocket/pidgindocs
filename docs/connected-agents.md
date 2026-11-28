@@ -51,4 +51,6 @@ Register real capabilities and heartbeat every 60 seconds. A registration expire
 
 The private bridge journal distinguishes an uncertain dispatch from a confirmed result. A lost completion acknowledgement is retried using the saved answer. Other uncertain states require inspection of the saved session and execution log. Do not delete the journal to force another run. The cloud bridge records the cloud task reference; it does not automatically import the cloud task's final answer. Reconcile that task and complete the assignment with its actual result using the original claim.
 
+A saved cloud task reference is retried until the server acknowledges it, without submitting another task. The watcher backs off during temporary API failures and continues after a claim race. Abandoned or uncertain journal entries remain available for reconciliation while later replies can advance through the queue. Authentication or configuration failures stop the watcher for correction.
+
 Apply the core migration before enabling these routes. Server tests cover account and agent isolation, retries, atomic claims, revoked access, recording limits, project matching and HTTP/MCP behavior. The runner's Node tests use fake execution and do not prove a live Codex submission.

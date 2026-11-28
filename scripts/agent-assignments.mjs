@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 export function validateConfig(config) {
   const url = new URL(config.url);
@@ -72,9 +73,13 @@ export async function runOnce(rawConfig, { fetchImpl=fetch, execute=executeCodex
   const config=validateConfig(rawConfig);
   await mkdir(config.stateDir,{recursive:true,mode:0o700});
   const api = async (path,body) => {
-    const response=await fetchImpl(config.url+path,{method:body===undefined?'GET':'POST',headers:{Authorization:config.credential,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(30000)});
-    const data=await response.json();
-    if(!response.ok||!data.ok)throw new Error(`Assignment API refused the request (${response.status})`);
+    let response;
+    try{response=await fetchImpl(config.url+path,{method:body===undefined?'GET':'POST',headers:{Authorization:config.credential,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(30000)});}
+    catch(cause){throw Object.assign(new Error('Assignment API is unavailable',{cause}),{status:0,retryable:true});}
+    if(!response.ok)throw Object.assign(new Error(`Assignment API refused the request (${response.status})`),{status:response.status,retryable:response.status===408||response.status===429||response.status>=500});
+    let data;
+    try{data=await response.json();}catch(cause){throw Object.assign(new Error('Assignment API returned an invalid response',{cause}),{status:response.status,retryable:true});}
+    if(!data.ok)throw new Error('Assignment API refused the request');
     return data.data;
   };
   const metaPath=join(config.stateDir,'connection.json');
@@ -91,15 +96,30 @@ export async function runOnce(rawConfig, { fetchImpl=fetch, execute=executeCodex
     if(journal.phase==='result_ready'){
       await api(`/api/assignments/${journal.id}/update`,{action:'complete',lease_token:journal.lease_token,result:journal.result,session_ref:journal.session_ref});
       journal.phase='completed';await save(path,journal);recovered.push({id:journal.id,status:'completed'});
-    }else recovered.push({id:journal.id,status:journal.phase,session_ref:journal.session_ref??null});
+    }else {
+      if(journal.phase==='submitted'&&!journal.receipt_confirmed){
+        await api(`/api/assignments/${journal.id}/update`,{action:'dispatch',lease_token:journal.lease_token,session_ref:journal.session_ref});
+        journal.receipt_confirmed=true;await save(path,journal);
+      }
+      recovered.push({id:journal.id,status:journal.phase,session_ref:journal.session_ref??null});
+    }
   }
-  const page=await api(`/api/assignments?runtime_id=${encodeURIComponent(runtime.id)}&limit=1`);
-  const task=page.items[0];
-  if(!task)return {status:'idle',recovered};
-  if(!/^[a-f0-9-]+$/.test(task.id))throw new Error('Invalid assignment ID');
+  // Bound each poll, but advance past uncertain local journals so one abandoned
+  // claim cannot starve the rest of the queue. Never relaunch journaled work.
+  const after=Number.isSafeInteger(meta.queue_cursor)&&meta.queue_cursor>=0?meta.queue_cursor:0;
+  const page=await api(`/api/assignments?runtime_id=${encodeURIComponent(runtime.id)}&limit=25&after=${after}`);
+  let task=null,skipped=false;
+  for(const candidate of page.items){
+    if(!/^[a-f0-9-]+$/.test(candidate.id))throw new Error('Invalid assignment ID');
+    if(await load(join(config.stateDir,`assignment-${candidate.id}.json`))){skipped=true;continue;}
+    task=candidate;break;
+  }
+  meta.queue_cursor=task?0:page.next_cursor??0;await save(metaPath,meta);
+  if(!task)return {status:skipped?'needs_reconciliation':'idle',recovered};
   const journalPath=join(config.stateDir,`assignment-${task.id}.json`);
-  if(await load(journalPath))return {status:'needs_reconciliation',id:task.id,recovered};
-  const claim=await api(`/api/assignments/${task.id}/claim`,{runtime_id:runtime.id});
+  let claim;
+  try{claim=await api(`/api/assignments/${task.id}/claim`,{runtime_id:runtime.id});}
+  catch(error){if(error.status===409)return {status:'contended',id:task.id,recovered};throw error;}
   const journal={id:task.id,lease_token:claim.lease_token,phase:'claimed',target:config.target,session_ref:`attempt:${randomUUID()}`};
   await save(journalPath,journal);
   const resultPath=join(config.stateDir,`result-${task.id}.txt`);
@@ -118,6 +138,7 @@ export async function runOnce(rawConfig, { fetchImpl=fetch, execute=executeCodex
       journal.phase=remote?'submitted':'needs_reconciliation';journal.session_ref=remote?`codex-cloud:${remote[1]}`:journal.session_ref;
       await save(journalPath,journal);
       await api(`/api/assignments/${task.id}/update`,{action:'dispatch',lease_token:claim.lease_token,session_ref:journal.session_ref});
+      if(remote){journal.receipt_confirmed=true;await save(journalPath,journal);}
       return {status:remote?'dispatched':'needs_reconciliation',id:task.id,session_ref:journal.session_ref,recovered};
     }
     const answer=(await readFile(resultPath,'utf8')).trim();
@@ -132,16 +153,29 @@ export async function runOnce(rawConfig, { fetchImpl=fetch, execute=executeCodex
   }finally{clearInterval(heartbeat);}
 }
 
+/** Keep an explicitly started watcher connected across transient API failures. */
+export async function watchAssignments(config,{run=runOnce,signal,
+  wait=(milliseconds,abortSignal)=>sleep(milliseconds,undefined,{signal:abortSignal}),
+  onResult=result=>process.stdout.write(JSON.stringify(result)+'\n'),
+  onError=(_error,delay)=>process.stderr.write(`Assignment API temporarily unavailable; retrying in ${delay/1000} seconds.\n`),
+}={}){
+  let backoff=10000;
+  while(!signal?.aborted){
+    let delay=10000;
+    try{onResult(await run(config));backoff=10000;}
+    catch(error){if(!error.retryable)throw error;delay=backoff;backoff=Math.min(60000,backoff*2);onError(error,delay);}
+    if(signal?.aborted)break;
+    try{await wait(delay,signal);}catch(error){if(signal?.aborted)return;throw error;}
+  }
+}
+
 async function main(){
   if(process.argv.includes('--help')){process.stdout.write('Usage: node scripts/agent-assignments.mjs --config /absolute/config.json [--watch]\nSet ASSIGNMENT_CREDENTIAL to "Agent <key>" or "Bearer <key>". Config: url, target (local/cloud), connectionId, cwd, stateDir, cloudEnvironment (cloud only), name (optional).\n');return;}
   const option=process.argv.indexOf('--config');
   if(option<0||!process.argv[option+1])throw new Error('An explicit --config file is required');
   const raw=JSON.parse(await readFile(resolve(process.argv[option+1]),'utf8'));
   const config={...raw,credential:process.env.ASSIGNMENT_CREDENTIAL,stateDir:raw.stateDir??join(homedir(),'.local','state','agent-assignments',raw.name??'default')};
-  do{
-    const result=await runOnce(config);process.stdout.write(JSON.stringify(result)+'\n');
-    if(!process.argv.includes('--watch'))break;
-    await new Promise(resolvePromise=>setTimeout(resolvePromise,10000));
-  }while(true);
+  if(process.argv.includes('--watch'))await watchAssignments(config);
+  else process.stdout.write(JSON.stringify(await runOnce(config))+'\n');
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{process.stderr.write(`Assignment runner: ${error.message}\n`);process.exitCode=1;});
