@@ -18,10 +18,10 @@ Runtime registration advertises execution location and accepted modalities with 
 
 ## Tasks
 
-- [ ] Add `core/assignments/{store,routes,mcp}.ts` and a core migration for replies, assignments and runtime capabilities. Add D1 tests before implementation; run focused tests and TypeScript.
-- [ ] Wire HTTP routes, MCP tools, the board inbox and agent instructions. Test owner/API/agent credential behavior and revocation, including prefix mapping in Duva.
-- [ ] Add a portable Codex assignment bridge with explicit local/cloud configuration and a durable launch journal. Test registration, dispatch, completion, deferral and uncertain-launch reconciliation with fake processes.
-- [ ] Add a shared audio reply component, recording capture and visible status/results to web audio/commute players. Integrate Duva catalogs and the native audio player. Test voice without transcription and request retry behavior.
+- [x] Add `core/assignments/{store,routes,mcp}.ts` and a core migration for replies, assignments and runtime capabilities. Add D1 tests before implementation; run focused tests and TypeScript.
+- [x] Wire HTTP routes, MCP tools, the board inbox and agent instructions. Test owner/API/agent credential behavior and revocation, including prefix mapping in Duva.
+- [x] Add a portable Codex assignment bridge with explicit local/cloud configuration and a durable launch journal. Test registration, dispatch, completion, deferral and uncertain-launch reconciliation with fake processes.
+- [x] Add a shared audio reply component, recording capture and visible status/results to web audio/commute players. Integrate Duva catalogs and the native audio player. Test voice without transcription and request retry behavior.
 - [ ] Import the committed public core into Duva, carry migration and tests through the managed assemblies, update connection guidance and run required checks. Review the complete diff with a fresh reviewer.
 - [ ] Publish reviewable branches, inspect CI, enable through the correct release paths, and verify real saved replies and agent pickup. Publish one private handoff at the terminal outcome.
 
@@ -38,3 +38,7 @@ Runtime registration advertises execution location and accepted modalities with 
 - 2026-11-27: Inspected current main in both repositories and created isolated feature worktrees. No previous implementation for audio responses exists. Local Codex CLI supports local and cloud submission. Intel worker probe failed DNS resolution; tests will run locally with bounded parallelism.
 - 2026-11-27: The owner selected a personal cloud configuration for the first trial. Added user-owned project connections, matching runtime registration and immutable context snapshots. Thirteen focused D1 tests and five bridge tests pass; the full conformance run had 675 passes and one timeout, and that file passed on focused rerun (48 tests with assignments).
 - Cloud account setup is pending: current-app environment compatibility still needs a real submission check. Computer Use became unavailable after detecting another browser controller. No environment, production connection or live runner has been created.
+- 2026-11-27: Both managed Apple schemes build successfully. Managed native-session submission, scoped claim, completion and isolation pass through the real Worker entry. The shared-core and Solo bundle boundaries pass; 6,120 stored interface labels have all required translations; six bridge tests pass. Full managed server verification and final review are pending.
+- Ruling: The bridge advertises text capability. Voice-only replies remain saved for a voice-capable agent; native on-device transcription is optional. No platform transcription service or provider credential is introduced.
+- Ruling: A cloud submission receipt identifies the task but is not its final answer. The bridge retains dispatch state and exposes a task link; automatic result import is not enabled. The original dispatcher must reconcile the actual result.
+- Ruling: User cloud setup remains separate from implementation. The browser-control service is unavailable; a prior competing browser controller does not establish that Chrome is now free. Do not enable a fabricated or unverified environment ID.
