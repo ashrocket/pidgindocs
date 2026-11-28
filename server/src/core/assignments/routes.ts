@@ -54,9 +54,11 @@ async function replyInput(request: Request) {
     if (value !== null) input[key] = value;
   }
   if (form.has("playback_seconds")) input.playback_seconds = Number(form.get("playback_seconds"));
-  const file = form.get("voice");
+  // Older Workers type packages describe FormData.get as string-only. Narrow
+  // the runtime value explicitly; a multipart file is a Blob in both runtimes.
+  const file: unknown = form.get("voice");
   if (file === null) return { input, voice: undefined };
-  if (typeof file === "string") throw new AssignmentError("Invalid recording");
+  if (!(file instanceof Blob)) throw new AssignmentError("Invalid recording");
   return { input, voice: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type.split(";")[0].toLowerCase() } };
 }
 export function assignmentError(error: unknown): Response {
