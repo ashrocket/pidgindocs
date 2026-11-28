@@ -26,7 +26,7 @@ export async function renderAudio(request: Request, env: Env, path: string): Pro
   const nonce = crypto.randomUUID(), base = basePath(env);
   const requested=new URL(request.url).searchParams.get("lang")??request.headers.get("Accept-Language")?.split(",")[0]?.split("-")[0]??"en";
   const language=translationLanguages(env).includes(requested as Language)?requested as Language:"en";
-  const labels=assignmentCatalogs[language],t=(key:string)=>labels[key];
+  const labels:Record<string,string>=assignmentCatalogs[language],t=(key:string)=>labels[key];
   const data = JSON.stringify(page).replace(/</g,"\\u003c");
   const html = `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${t("Audio")} · ${esc(editionProductName())}</title>
 <style>body{font:16px/1.5 system-ui;color:${theme.ink};background:${theme.sand};margin:0}main{max-width:760px;margin:0 auto;padding:24px 16px}article.audio-item{padding:20px;border-radius:12px;background:${theme.paper};margin:16px 0}audio{width:100%}a{color:${theme.primary}}h2{font-size:1.15rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}button{font:inherit;min-height:44px}${AUDIO_REPLY_CSS}</style></head><body>${navShell({nonce,base,userId})}<main><a href="${appPath(base,"/")}">${t("Inbox")}</a><h1>${t("Audio")}</h1><div id="audio-list"></div><button id="audio-more" hidden>${t("Show more")}</button><p id="audio-notice" role="status"></p></main>
