@@ -67,6 +67,8 @@ import { getSetupStatus } from "./setup/status";
 import { createInviteCode } from "./invites";
 import { handleOwnerUsers, handleOwnerInviteCode } from "./routes/owner-admin";
 import { handleLibrary } from "./library";
+import { handleAssignments } from "./assignments/routes";
+import { renderAudio } from "./audio/web";
 
 export const coreRouter = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -99,6 +101,7 @@ export const coreRouter = {
       { const routed = await editionRoutes().controlBeforeOwner?.(routeContext); if (routed) return routed; }
       { const routed = await editionRoutes().hostingBeforeOwner?.(routeContext); if (routed) return routed; }
       await ensureOwnerExists(env);
+      { const routed = await handleAssignments(request, env, path); if (routed) return routed; }
 
       { const routed = await editionRoutes().controlOnboarding?.(routeContext); if (routed) return routed; }
       { const routed = await editionRoutes().hostingManaged?.(routeContext); if (routed) return routed; }
@@ -894,6 +897,7 @@ export const coreRouter = {
       }
 
       { const routed = await editionRoutes().hostingPages?.(routeContext); if (routed) return routed; }
+      if ((path === "/audio" || /^\/audio\/[^/]+$/.test(path)) && method === "GET") return await renderAudio(request, env, path);
       // Without an edition page at the root, a visit goes to setup, which shows the sign-in page when signed out.
       if (path === "/" && method === "GET") return new Response(null, { status: 302, headers: { Location: "/setup" } });
 

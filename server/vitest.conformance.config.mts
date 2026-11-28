@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // Runs the PidginCore conformance tests against wrangler.conformance.toml,
 // whose entry installs no edition hooks.
 const CONFORMANCE_TESTS = [
-  "app-shell", "artifact-house-style", "artifact-publication-d1", "artifacts", "auth-utils", "base-path",
+  "app-shell", "artifact-house-style", "artifact-publication-d1", "artifacts", "audio-assignments", "auth-utils", "base-path",
   "batch", "builtin-styles", "chat-gchat", "chat-ingest", "commute-routes", "core-boundary", "core-utils", "cron",
   "crypto", "design-system", "design-systems", "design-systems-http", "diagram-zoom", "discuss", "drafts",
   "enhance-anthropic", "identities", "instance-settings",

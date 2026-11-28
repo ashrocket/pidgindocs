@@ -1,4 +1,5 @@
 import { updateMessagePriority } from "../messages/priority";
+import { ASSIGNMENT_TOOLS, callAssignmentTool } from "../assignments/mcp";
 import { LIBRARY_TOOLS, callLibraryTool } from "../library";
 import { editionCallWorkspaceTool, editionLibraryEnabled, editionWorkspaceTools, MentionRejected, ProjectNameRejected, UsageRefused, editionPublicSite, editionWorkspaceSignInOnly } from "../edition-hooks";
 import { editionMcpWriteRefusal, editionProductName, editionSingleWorkspaceRefusal, editionTeamCreationError, editionWireFormat } from "../edition-hooks";
@@ -2501,7 +2502,7 @@ export async function handleMcp(
 
     case "tools/list":
       return jsonRpcResult(id, { tools: [...(agentAttempt ? agentBoardTools() : authedAgent ? [...agentBoardTools(), ...TOOLS] : [...agentBoardTools(), ...TOOLS].filter((tool) => !AGENT_ONLY_BOARD_TOOLS.has(tool.name))),
-        ...eventToolsFor(authedAgent ? "agent" : "user"), ...(editionLibraryEnabled(env) ? LIBRARY_TOOLS : []), ...editionWorkspaceTools(env)]
+        ...ASSIGNMENT_TOOLS, ...eventToolsFor(authedAgent ? "agent" : "user"), ...(editionLibraryEnabled(env) ? LIBRARY_TOOLS : []), ...editionWorkspaceTools(env)]
         // The help tool is not offered on the public site, where the help API is not served either.
         .filter((tool) => !([HELP_TOOL_NAME, "pidgin_security_digest"].includes(tool.name) && editionPublicSite(env))).map(tool => ({ ...tool, name: clientToolName(tool.name), description: clientToolText(tool.description), inputSchema: productSchemaText(tool.inputSchema) })) });
 
@@ -2518,6 +2519,10 @@ export async function handleMcp(
       }
 
       const rawArguments = asObject(params.arguments);
+      if (ASSIGNMENT_TOOLS.some(tool => tool.name === toolName)) {
+        return jsonRpcResult(id, await callAssignmentTool(toolName, rawArguments, env,
+          authedAgent ?? { userId: authedUser!.userId, agentId: null }));
+      }
       const libraryResult = await callLibraryTool({ env, request, name: toolName, args: rawArguments });
       if (libraryResult) return jsonRpcResult(id, toolResult(libraryResult.text, libraryResult.data, libraryResult.isError));
       // Edition tools (Microsoft Teams inclusions, in one edition) are handled by the edition.

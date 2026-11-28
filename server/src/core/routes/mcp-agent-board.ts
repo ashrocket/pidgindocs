@@ -18,6 +18,7 @@ import { absoluteHelpResult, askHelp, HelpAskError, type HelpActor, type HelpAsk
 import type { Env } from "../types";
 import { helpTeamForUser, resolveHelpAgent } from "./help";
 import { listAgentBoards } from "../work-boards";
+import { listAssignments } from "../assignments/store";
 import { checkRateLimit } from "../ratelimit";
 import { appHref } from "../base-path";
 
@@ -217,7 +218,8 @@ export async function callAgentBoardTool(
     for (const projectId of new Set(shown.map((item) => item.project_id))) {
       await recordAgentBoardRead(env, projectId, agent, shown.filter((item) => item.project_id === projectId).map((item) => item.id));
     }
-    return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { data }, isError: false };
+    const inbox = { ...data, assignments: await listAssignments(env, agent, { limit }) };
+    return { content: [{ type: "text", text: JSON.stringify(inbox) }], structuredContent: { data: inbox }, isError: false };
   }
   const headers = new Headers({ Authorization: request.headers.get("Authorization") ?? "" });
   if (WORK_BOARD_TOOLS.has(name)) {
